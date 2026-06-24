@@ -146,7 +146,7 @@
         <div class="panel" id="panel-workers">
             <div class="flex-between mb-20">
                 <div class="section-title">水军管理</div>
-                <div class="flex"><button class="btn btn-success" onclick="connectAllWorkers()">&#x1F517; 一键全部连接</button> <button class="btn btn-warning" onclick="showBatchAssignBot()">&#x1F916; 批量分配Bot</button> <button class="btn" style="background:#9c27b0;color:#fff;" onclick="autoAssignAllBots()">⚡ 一键分配Bot</button> <button class="btn btn-primary" onclick="showAddWorker()">+ 添加水军</button></div>
+                <div class="flex"><button class="btn btn-success" onclick="connectAllWorkers()">&#x1F517; 一键全部连接</button> <button class="btn btn-warning" onclick="showBatchAssignBot()">&#x1F916; 批量分配Bot</button> <button class="btn" style="background:#9c27b0;color:#fff;" onclick="clearAllRestrictions()">🔄 清除所有限制</button> <button class="btn btn-primary" onclick="showAddWorker()">+ 添加水军</button></div>
             </div>
 
             <div id="add-worker-form" style="display:none" class="card mb-20">
@@ -568,7 +568,7 @@
                             <span class="badge badge-blue">${w.runtime_status || w.status}</span>
                             ${w.is_restricted ? '<span class="badge" style="background:#ff4444;color:#fff">⚠️已限制</span>' : ''}
                             ${w.in_cooldown ? '<span class="badge" style="background:#ffaa00;color:#000">⏸冷却' + w.cooldown_remaining + 's</span>' : ''}
-                            ${w.bot_username ? `<span class="text-gray"> → @${w.bot_username}</span>` : '<span class="text-gray" style="color:#ff9800;"> (未分配Bot)</span>'}
+                            <span class="text-gray" style="color:#4caf50;"> \u2192 Bot\u6c60\u8f6e\u6362 (${w.banned_bots ? w.banned_bots.length : 0}\u4e2a\u88ab\u7981)</span>
                         </div>
                         <div class="flex">
                             <button class="btn btn-sm btn-primary" onclick="connectWorker('${w.id}')">连接</button>
@@ -891,6 +891,33 @@
             loadProxies();
         }
 
+
+        
+        // === 清除所有限制记录 ===
+        async function clearAllRestrictions() {
+            if (!confirm('确认清除所有限制记录？\n这将重置所有水军+Bot的banned状态')) return;
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '⏳ 清除中...';
+            try {
+                const r = await fetch(API + '/api/restrictions/reset', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    alert('✅ 所有限制记录已清除！水军号现在可以使用全部Bot池');
+                    loadWorkers();
+                } else {
+                    alert('清除失败: ' + (d.error || '未知错误'));
+                }
+            } catch(e) {
+                alert('清除失败: ' + e.message);
+            }
+            btn.disabled = false;
+            btn.textContent = '🔄 清除所有限制';
+        }
 
         // === 水军分配Bot ===
         async function autoAssignAllBots() {

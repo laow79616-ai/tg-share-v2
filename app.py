@@ -1238,13 +1238,15 @@ async def _run_send_scheduler_inner():
                         await release_banned_worker(wid_try)
                         workers[wid_try].needs_disconnect = False
                         continue
-                # 跳过所有Bot都被banned的水军号
+                # 跳过banned组合过多的水军号（全局Bot池模式：超过80%的Bot被banned才跳过）
                 worker_phone_check = wc.get("phone", "")
-                bot_username_str = wc.get("bot_username", "") or ""
-                bot_names_check = [b.strip().lstrip("@") for b in bot_username_str.replace("...", "").split(",") if b.strip() and b.strip() != "..."]
-                if bot_names_check and worker_phone_check:
-                    all_bots_banned = all(is_worker_bot_banned(worker_phone_check, b) for b in bot_names_check)
-                    if all_bots_banned:
+                if worker_phone_check:
+                    restrictions_data = load_restrictions()
+                    banned_count = sum(1 for k, r in restrictions_data.get("records", {}).items() 
+                                      if r.get("banned") and r.get("worker_phone") == worker_phone_check)
+                    bots_data_check = load_json(BOTS_CONFIG_FILE)
+                    total_bots = len([b for b in bots_data_check.get("bots", []) if b.get("enabled", True)])
+                    if total_bots > 0 and banned_count >= total_bots * 0.8:
                         continue
                 # 按需连接
                 if wid_try not in workers or not workers[wid_try]._connected:

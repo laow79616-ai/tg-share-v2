@@ -305,30 +305,49 @@ class ShareWorker:
 
             # Try to get bot entity - use first valid bot username
             bot_entity = None
-            bot_username_to_use = self.bot_username
-            usernames_to_try = self.bot_usernames if self.bot_usernames else [self.bot_username]
-            # 过滤无效名称
-            valid_usernames = [u for u in usernames_to_try if u and "..." not in u and len(u) > 2]
+            bot_username_to_use = ""
+            # === 全局Bot池轮换机制 ===
+            # 不再使用固定绑定的bot_usernames，改为从全局Bot池依次选择
+            import os as _os
+            bots_file = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "bots.json")
+            restrictions_file = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "restrictions.json")
+            try:
+                with open(bots_file, 'r') as bf:
+                    bots_data = json.load(bf)
+                all_bots = [b.get("username", "").lstrip("@") for b in bots_data.get("bots", []) if b.get("enabled", True) and not b.get("is_restricted", False) and b.get("username")]
+            except Exception as e:
+                logger.warning(f"[Worker-{self.worker_id}] 加载Bot池失败: {e}")
+                all_bots = []
+            if not all_bots:
+                return False, "全局Bot池为空，无可用Bot", False
+            # 加载限制记录，跳过被banned的水军+Bot组合
+            banned_combos = set()
+            try:
+                with open(restrictions_file, 'r') as rf:
+                    restrictions_data = json.load(rf)
+                for key, record in restrictions_data.get("records", {}).items():
+                    if record.get("banned") and record.get("worker_phone") == self.phone:
+                        banned_combos.add(record.get("bot_username", "").lstrip("@"))
+            except Exception:
+                pass
+            # 使用全局轮换计数器选择Bot（基于类变量）
+            if not hasattr(ShareWorker, '_global_bot_index'):
+                ShareWorker._global_bot_index = 0
+            # 从全局索引开始，找到第一个可用的Bot
+            valid_usernames = []
+            start_idx = ShareWorker._global_bot_index % len(all_bots)
+            for i in range(len(all_bots)):
+                idx = (start_idx + i) % len(all_bots)
+                bot_name = all_bots[idx]
+                if bot_name in banned_combos:
+                    continue
+                valid_usernames.append(bot_name)
+                if len(valid_usernames) >= 5:
+                    break
+            # 推进全局索引（每次调用都推进，确保下次用不同Bot）
+            ShareWorker._global_bot_index += 1
             if not valid_usernames:
-                # 如果没有有效的Bot用户名，从全局Bot池获取
-                try:
-                    import os as _os
-                    bots_file = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "bots.json")
-                    with open(bots_file, 'r') as bf:
-                        bots_data = json.load(bf)
-                    all_bots = [b.get("username", "") for b in bots_data.get("bots", []) if b.get("enabled", True) and not b.get("restricted", False) and b.get("username")]
-                    if all_bots:
-                        import random
-                        random.shuffle(all_bots)
-                        valid_usernames = all_bots[:5]
-                        logger.info(f"[Worker-{self.worker_id}] 使用全局Bot池: {valid_usernames[:3]}...")
-                except Exception as e:
-                    logger.warning(f"[Worker-{self.worker_id}] 加载全局Bot池失败: {e}")
-            # Bot轮换：根据daily_sends选择不同的起始Bot
-            if len(valid_usernames) > 1:
-                import random
-                start_idx = self.daily_sends % len(valid_usernames)
-                valid_usernames = valid_usernames[start_idx:] + valid_usernames[:start_idx]
+                return False, f"所有Bot都被当前水军号banned，无可用Bot", False
             for uname in valid_usernames:
                 try:
                     bot_entity = await self.client.get_entity(f"@{uname}")
@@ -338,7 +357,7 @@ class ShareWorker:
                     logger.debug(f"[Worker-{self.worker_id}] Bot @{uname} not found: {e}")
                     continue
             if bot_entity is None:
-                return False, f"无法找到任何已分配的Bot: {', '.join(valid_usernames[:5])}", False
+                return False, f"无法连接任何Bot: {', '.join(valid_usernames[:5])}", False
 
             self.current_bot_username = bot_username_to_use
 
