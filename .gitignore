@@ -1,0 +1,31 @@
+# Session files (contain auth credentials)
+*.session
+*.session-journal
+
+# Sensitive data files
+data/targets.json
+data/workers_config.json
+data/proxy_pool.json
+data/bots.json
+data/api_configs.json
+data/bot_config.json
+data/config.json
+data/send_history.json
+data/send_status.json
+
+# Avatar images (too large for git)
+data/avatars/
+avatars/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Log files
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
