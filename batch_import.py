@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from aiohttp import web
 
+from config import save_json  # 原子写入, 避免并发/崩溃损坏配置文件
+
 logger = logging.getLogger("BatchImport")
 
 # 配置文件路径
@@ -64,7 +66,7 @@ def load_api_configs():
 
 def save_api_configs(data):
     """保存API配置"""
-    API_CONFIGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    save_json(API_CONFIGS_FILE, data)
 
 
 def get_available_name():
@@ -237,7 +239,7 @@ async def api_auto_assign_apis(request):
         worker["api_config_id"] = api_cfg["id"]
     
     workers_data["workers"] = workers
-    workers_file.write_text(json.dumps(workers_data, ensure_ascii=False, indent=2), encoding='utf-8')
+    save_json(workers_file, workers_data)
     
     # 更新统计
     for cfg in api_configs:
@@ -449,7 +451,7 @@ async def api_batch_import_workers(request):
         })
     
     # 保存
-    workers_file.write_text(json.dumps(workers_data, ensure_ascii=False, indent=2), encoding='utf-8')
+    save_json(workers_file, workers_data)
     
     # 清理临时文件
     shutil.rmtree(extract_dir, ignore_errors=True)
@@ -574,7 +576,7 @@ async def api_setup_profiles(request):
     
     # 保存更新
     workers_data["workers"] = workers
-    workers_file.write_text(json.dumps(workers_data, ensure_ascii=False, indent=2), encoding='utf-8')
+    save_json(workers_file, workers_data)
     
     success_count = sum(1 for r in results if r["success"])
     return web.json_response({

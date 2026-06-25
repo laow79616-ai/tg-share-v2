@@ -4,6 +4,7 @@
 """
 import os
 import json
+import tempfile
 import logging
 from pathlib import Path
 
@@ -43,7 +44,27 @@ def load_json(filepath):
 
 
 def save_json(filepath, data):
-    """安全保存JSON文件"""
+    """安全保存JSON文件(原子写入)
+
+    先写入同目录下的临时文件并 fsync 落盘, 再用 os.replace 原子替换目标文件。
+    避免写入过程中进程崩溃/磁盘满导致目标文件被截断损坏。
+    """
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
-    filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    # 临时文件必须与目标同目录, 确保 os.replace 是同一文件系统上的原子操作
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(filepath.parent), prefix=f".{filepath.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())  # 确保数据真正落盘, 防止崩溃后内容丢失
+        os.replace(tmp_path, filepath)  # 原子替换: 读取方要么看到旧文件, 要么看到完整新文件
+    except Exception:
+        try:
+            os.unlink(tmp_path)  # 失败时清理残留临时文件
+        except OSError:
+            pass
+        raise
