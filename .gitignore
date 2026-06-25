@@ -9,6 +9,7 @@ data/proxy_pool.json
 data/bots.json
 data/api_configs.json
 data/bot_config.json
+data/auth.json
 data/config.json
 data/send_history.json
 data/send_status.json

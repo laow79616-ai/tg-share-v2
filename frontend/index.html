@@ -63,7 +63,9 @@
 </head>
 <body>
     <div class="container">
-        <h1>🚀 TG Share V2 - 推广管理系统</h1>
+        <h1>🚀 TG Share V2 - 推广管理系统
+            <button onclick="logout()" style="float:right; font-size:13px; padding:6px 14px; border:1px solid #37474f; border-radius:6px; background:#263238; color:#90a4ae; cursor:pointer;">退出登录</button>
+        </h1>
 
         <div class="tabs">
             <div class="tab active" onclick="switchTab('dashboard')">仪表盘</div>
@@ -466,6 +468,49 @@
 
     <script>
         const API = '';
+
+        // === 鉴权: 包装 fetch 自动附带 token, 401 时弹出登录 ===
+        const _origFetch = window.fetch.bind(window);
+        window.fetch = function(url, opts) {
+            opts = opts || {};
+            const token = localStorage.getItem('tg_auth_token');
+            if (token) {
+                opts.headers = Object.assign({}, opts.headers || {}, {'X-Auth-Token': token});
+            }
+            return _origFetch(url, opts).then(function(resp) {
+                if (resp.status === 401) {
+                    localStorage.removeItem('tg_auth_token');
+                    showLogin();
+                }
+                return resp;
+            });
+        };
+        function showLogin() { document.getElementById('login-overlay').style.display = 'flex'; }
+        function hideLogin() { document.getElementById('login-overlay').style.display = 'none'; }
+        function logout() { localStorage.removeItem('tg_auth_token'); showLogin(); }
+        async function doLogin() {
+            const u = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            const errEl = document.getElementById('login-err');
+            errEl.textContent = '';
+            try {
+                const r = await _origFetch(API + '/api/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username: u, password: p})
+                });
+                const d = await r.json();
+                if (d.ok && d.token) {
+                    localStorage.setItem('tg_auth_token', d.token);
+                    hideLogin();
+                    loadDashboard();
+                } else {
+                    errEl.textContent = d.error || '登录失败';
+                }
+            } catch(e) {
+                errEl.textContent = '请求失败: ' + e.message;
+            }
+        }
 
         // Tab切换
         function switchTab(name) {
@@ -1396,9 +1441,17 @@
             }
         }
 
-        // 初始加载
-        loadDashboard();
-        setInterval(loadDashboard, 10000);
+        // 初始加载 (需先登录; 包入 DOMContentLoaded 确保登录浮层已解析进 DOM)
+        window.addEventListener('DOMContentLoaded', function() {
+            if (localStorage.getItem('tg_auth_token')) {
+                loadDashboard();
+            } else {
+                showLogin();
+            }
+        });
+        setInterval(function() {
+            if (localStorage.getItem('tg_auth_token')) loadDashboard();
+        }, 10000);
     
         function updateWorkflowPanel(sd) {
             const actPanel = document.getElementById('workflow-current-activity');
@@ -1435,5 +1488,18 @@
             }
         }
 </script>
+<div id="login-overlay" style="display:none; position:fixed; inset:0; background:rgba(8,15,25,.92); z-index:9999; align-items:center; justify-content:center;">
+    <div style="background:#1e2a38; padding:32px; border-radius:12px; width:320px; box-shadow:0 8px 40px rgba(0,0,0,.6);">
+        <h2 style="margin:0 0 20px; color:#4fc3f7; text-align:center; font-size:20px;">🔒 管理员登录</h2>
+        <input id="login-user" placeholder="用户名" value="admin" autocomplete="username"
+            style="width:100%; box-sizing:border-box; padding:10px 12px; margin-bottom:12px; border-radius:6px; border:1px solid #37474f; background:#263238; color:#fff; font-size:14px;">
+        <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password"
+            onkeydown="if(event.key==='Enter')doLogin()"
+            style="width:100%; box-sizing:border-box; padding:10px 12px; margin-bottom:12px; border-radius:6px; border:1px solid #37474f; background:#263238; color:#fff; font-size:14px;">
+        <div id="login-err" style="color:#ef5350; font-size:13px; min-height:18px; margin-bottom:12px;"></div>
+        <button onclick="doLogin()"
+            style="width:100%; padding:11px; border:none; border-radius:6px; background:#4fc3f7; color:#0d1b2a; font-weight:bold; font-size:15px; cursor:pointer;">登 录</button>
+    </div>
+</div>
 </body>
 </html>

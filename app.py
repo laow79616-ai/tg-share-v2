@@ -46,6 +46,7 @@ from telethon.tl.types import (
 
 # 本地模块
 from worker import ShareWorker
+import auth
 from config import (
     DATA_DIR, SESSIONS_DIR, LOGS_DIR,
     load_json, save_json,
@@ -346,6 +347,31 @@ async def index(request):
     if frontend_path.exists():
         return web.FileResponse(frontend_path)
     return web.Response(text="tg_share_v2 running", content_type="text/html")
+
+
+@web.middleware
+async def auth_middleware(request, handler):
+    """鉴权中间件: 放行登录端点与静态资源, 其余 /api/* 需有效 token"""
+    path = request.path
+    if path == "/api/login" or path.startswith("/static/") or not path.startswith("/api/"):
+        return await handler(request)
+    if not auth.verify_token(request.headers.get("X-Auth-Token", "")):
+        return web.json_response({"ok": False, "error": "未授权或登录已过期, 请重新登录"}, status=401)
+    return await handler(request)
+
+
+@routes.post("/api/login")
+async def api_login(request):
+    """管理员登录, 校验通过返回 token"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "请求格式错误"}, status=400)
+    username = body.get("username", "")
+    password = body.get("password", "")
+    if auth.verify_credentials(username, password):
+        return web.json_response({"ok": True, "token": auth.create_token(username)})
+    return web.json_response({"ok": False, "error": "用户名或密码错误"}, status=401)
 
 
 @routes.get("/api/status")
@@ -1531,6 +1557,16 @@ async def on_startup(app):
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # 初始化鉴权 (首次启动生成随机管理员密码, 仅显示一次)
+    _cfg, _plain = auth.load_or_init_auth()
+    if _plain:
+        logger.warning("=" * 56)
+        logger.warning("  首次启动 - 已生成 Web 管理面板管理员账号")
+        logger.warning("  用户名: admin")
+        logger.warning(f"  密码:   {_plain}")
+        logger.warning("  请妥善保存! 此密码仅在本次启动显示一次。")
+        logger.warning("=" * 56)
+
     # 初始化统计
     stats = load_json(STATS_FILE)
     stats["start_time"] = time.time()
@@ -1563,7 +1599,7 @@ async def on_cleanup(app):
 
 def create_app():
     """创建Web应用"""
-    app = web.Application()
+    app = web.Application(middlewares=[auth_middleware])
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     register_batch_import_routes(routes)
@@ -1580,7 +1616,7 @@ def create_app():
     # CORS
     cors = aiohttp_cors.setup(app, defaults={
         "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=True,
+            allow_credentials=False,  # 使用 X-Auth-Token 请求头鉴权, 不依赖 cookie
             expose_headers="*",
             allow_headers="*",
             allow_methods="*"
