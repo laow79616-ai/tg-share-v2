@@ -6,7 +6,7 @@ Worker 执行模块 - 水军通过Bot转发广告
   2. Bot回复广告消息（图片+文案+URL按钮）
   3. 水军转发广告消息给目标用户
   4. 验证发送状态（检查消息是否出现在对方聊天中）
-  5. 如果未送达，水军暂停10分钟
+  5. 如果连续多次未送达，水军进入冷却
   6. 如果被TG限制，标记水军号
 
 关键：使用 Telegram 的转发功能分享广告消息
@@ -43,12 +43,11 @@ logger = logging.getLogger("Worker")
 
 MAX_RECONNECT_ATTEMPTS = 3
 RECONNECT_DELAY = 5
-COOLDOWN_DURATION = 3600  # 默认冷却时间
-# 递增等待策略: 第1次1h, 第2次12h, 第3次24h, 第4次永久标记
+# 递增等待策略: 第1次20分钟, 第2次1小时, 第3次2小时, 第4次永久标记
 PROGRESSIVE_WAIT = {
-    1: 1200,      # 第1次失败: 等待1小时
-    2: 3600,     # 第2次失败: 等待12小时
-    3: 7200,     # 第3次失败: 等待24小时
+    1: 1200,      # 第1次失败: 等待20分钟
+    2: 3600,     # 第2次失败: 等待1小时
+    3: 7200,     # 第3次失败: 等待2小时
     4: -1,        # 第4次失败: 永久标记限制
 }
 MAX_FAILURES = 4  # 第4次直接标记限制
@@ -211,16 +210,22 @@ class ShareWorker:
             return True
         return False
 
-    def enter_cooldown(self, duration=COOLDOWN_DURATION):
-        """进入冷却期 - 递增等待策略: 1h -> 12h -> 24h -> 永久标记"""
+    def enter_cooldown(self, duration=None):
+        """进入冷却期
+        - 若显式传入 duration(如 TG FloodWait 要求的秒数), 优先使用该时长
+        - 否则按递增策略: 20分钟 -> 1小时 -> 2小时 -> 永久标记
+        """
         # 如果已死/已被永久限制，不做任何处理
         if self.is_dead:
             return
         # 增加限制计数
         self.rate_limit_count += 1
         logger.warning(f"[Worker-{self.worker_id}] 分享失败第 {self.rate_limit_count} 次")
-        # 根据失败次数决定等待时间
-        wait_time = PROGRESSIVE_WAIT.get(self.rate_limit_count, -1)
+        # 决定本次等待时长: 显式传入的 duration 优先, 否则按递增表
+        if duration is not None:
+            wait_time = duration
+        else:
+            wait_time = PROGRESSIVE_WAIT.get(self.rate_limit_count, -1)
         if wait_time == -1 or self.rate_limit_count >= MAX_FAILURES:
             # 第4次(或更多): 永久标记限制
             self.is_dead = True
@@ -230,22 +235,23 @@ class ShareWorker:
             self.needs_disconnect = True
             logger.error(f"[Worker-{self.worker_id}] ☠️ 水军号永久限制: 分享失败{self.rate_limit_count}次")
             return
-        # 第1-3次: 按递增时间等待
+        # 第1-3次: 按等待时长进入冷却
         self.cooldown_until = time.time() + wait_time
-        hours = wait_time / 3600
+        # 自适应时长描述: >=1小时显示小时, 否则显示分钟(避免 0.33h 被显示为"0小时")
+        wait_desc = f"{wait_time/3600:.1f}小时" if wait_time >= 3600 else f"{max(1, round(wait_time/60))}分钟"
         if self.rate_limit_count >= 3:
             self.status = "banned_24h"
             self.has_been_banned_24h = True
             self.banned_at = time.time()
             self.needs_disconnect = True
-            logger.error(f"[Worker-{self.worker_id}] 🚫 分享失败第{self.rate_limit_count}次，等待{hours:.0f}小时，断开释放资源")
+            logger.error(f"[Worker-{self.worker_id}] 🚫 分享失败第{self.rate_limit_count}次，等待{wait_desc}，断开释放资源")
         elif self.rate_limit_count >= 2:
             self.status = "cooldown"
             self.needs_disconnect = True
-            logger.warning(f"[Worker-{self.worker_id}] ⚠️ 分享失败第{self.rate_limit_count}次，等待{hours:.0f}小时，断开释放资源")
+            logger.warning(f"[Worker-{self.worker_id}] ⚠️ 分享失败第{self.rate_limit_count}次，等待{wait_desc}，断开释放资源")
         else:
             self.status = "cooldown"
-            logger.warning(f"[Worker-{self.worker_id}] 分享失败第{self.rate_limit_count}次，等待{hours:.0f}小时后重新排队")
+            logger.warning(f"[Worker-{self.worker_id}] 分享失败第{self.rate_limit_count}次，等待{wait_desc}后重新排队")
 
     def mark_restricted(self, reason=""):
         """标记水军号被限制"""
@@ -512,9 +518,9 @@ class ShareWorker:
                     self._consecutive_undelivered = 0
                 self._consecutive_undelivered += 1
                 if self._consecutive_undelivered >= 3:
-                    # 连续3次未送达 → 可能被TG静默限制，暂停10分钟
+                    # 连续3次未送达 → 可能被TG静默限制，暂停1小时
                     cnt = self._consecutive_undelivered
-                    logger.warning(f"[Worker-{self.worker_id}] ⚠️ 连续{cnt}次未送达，水军暂停30分钟")
+                    logger.warning(f"[Worker-{self.worker_id}] ⚠️ 连续{cnt}次未送达，水军暂停1小时")
                     self.enter_cooldown(3600)
                     self._consecutive_undelivered = 0
                     return False, f"连续{cnt}次未送达(水军暂停)", bot_restricted
