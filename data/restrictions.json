@@ -6762,6 +6762,57 @@
         "转发失败: Too many requests (已限制1次)"
       ],
       "last_fail": "2026-06-26T14:19:27.939152"
+    },
+    "+6285256108291|kuaiyue49Bot": {
+      "worker_phone": "+6285256108291",
+      "bot_username": "kuaiyue49Bot",
+      "fail_count": 2,
+      "banned": false,
+      "errors": [
+        "转发失败: Too many requests (已限制1次)",
+        "转发失败: Too many requests (已限制1次)"
+      ],
+      "last_fail": "2026-06-26T14:34:49.469157"
+    },
+    "+6285717262214|kuaiyue13Bot": {
+      "worker_phone": "+6285717262214",
+      "bot_username": "kuaiyue13Bot",
+      "fail_count": 1,
+      "banned": false,
+      "errors": [
+        "转发失败: Too many requests (已限制1次)"
+      ],
+      "last_fail": "2026-06-26T14:37:58.458945"
+    },
+    "+601161872045|kuaiyue113Bot": {
+      "worker_phone": "+601161872045",
+      "bot_username": "kuaiyue113Bot",
+      "fail_count": 1,
+      "banned": false,
+      "errors": [
+        "转发失败: Too many requests (已限制1次)"
+      ],
+      "last_fail": "2026-06-26T14:46:10.630368"
+    },
+    "+60174916547|kuaiyue115Bot": {
+      "worker_phone": "+60174916547",
+      "bot_username": "kuaiyue115Bot",
+      "fail_count": 1,
+      "banned": false,
+      "errors": [
+        "转发失败: Too many requests (已限制1次)"
+      ],
+      "last_fail": "2026-06-26T14:49:25.945098"
+    },
+    "+601168110140|kuaiyue54Bot": {
+      "worker_phone": "+601168110140",
+      "bot_username": "kuaiyue54Bot",
+      "fail_count": 1,
+      "banned": false,
+      "errors": [
+        "转发失败: Too many requests (已限制1次)"
+      ],
+      "last_fail": "2026-06-26T15:04:03.908894"
     }
   }
 }

@@ -430,7 +430,7 @@ class ShareWorker:
                             ad_msg = msg
                             break
                 if ad_msg is None:
-                    return False, "Bot未返回广告消息(重试后仍无)", False
+                    return False, f"Bot @{bot_username_to_use} 未返回广告消息(重试后仍无)", False
 
             # === Step 3: 分享广告给目标用户 ===
             if share_query is not None:
