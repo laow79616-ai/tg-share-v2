@@ -1069,13 +1069,9 @@
                 var restrictionStatus = b.restriction_status || '';
                 var statusClass;
                 if (restrictionStatus === 'platform_banned') statusClass = 'badge-red';
-                else if (restrictionStatus === 'banned') statusClass = 'badge-red';
-                else if (restrictionStatus === 'restricted') statusClass = 'badge-orange';
                 else statusClass = b.status === 'active' ? 'badge-green' : (b.status === 'invalid' ? 'badge-red' : 'badge-blue');
                 var statusText;
                 if (restrictionStatus === 'platform_banned') statusText = '🚫平台禁止';
-                else if (restrictionStatus === 'banned') statusText = '🚫被禁止';
-                else if (restrictionStatus === 'restricted') statusText = '⚠️受限';
                 else statusText = b.status;
                 var restrictionDetail = '';
                 if (restrictionStatus === 'platform_banned') {
@@ -1097,12 +1093,8 @@
             document.getElementById('bots-list').innerHTML = html || '<tr><td colspan="6">暂无Bot</td></tr>';
             // 统计被限制的Bot数量
                 var platformBanned = bots.filter(function(b) { return b.restriction_status === 'platform_banned'; }).length;
-                var restrictedBots = bots.filter(function(b) { return b.restriction_status === 'restricted'; }).length;
-                var bannedBots = bots.filter(function(b) { return b.restriction_status === 'banned'; }).length;
                 var statsHtml = '总计: ' + bots.length + ' 个Bot | 总发送: ' + totalSends + ' | 成功: ' + successSends + ' | 失败: ' + failSends;
                 if (platformBanned > 0) statsHtml += ' | <span style="color:#ff1744;font-weight:bold;">平台禁止: ' + platformBanned + '</span>';
-                if (bannedBots > 0) statsHtml += ' | <span style="color:#e74c3c;">被禁止: ' + bannedBots + '</span>';
-                if (restrictedBots > 0) statsHtml += ' | <span style="color:#f39c12;">受限: ' + restrictedBots + '</span>';
                 document.getElementById('bot-stats').innerHTML = statsHtml;
         }
 

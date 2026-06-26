@@ -877,38 +877,11 @@ async def api_bots_list(request):
     data = load_json(BOTS_CONFIG_FILE)
     bot_list = data.get("bots", [])
     bot_list.sort(key=lambda b: b.get("number", 0))
-    # 附加每个Bot的限制统计信息
-    restrictions_data = load_restrictions()
-    records = restrictions_data.get("records", {})
+    # Bot状态只显示平台级别限制（inline disabled/restricted）
     for bot in bot_list:
-        bot_username = bot.get("username", "").lstrip("@")
-        # 统计该Bot被多少个水军号限制/禁止
-        restricted_count = 0
-        banned_count = 0
-        restricted_workers = []
-        for key, record in records.items():
-            if record.get("bot_username", "").lstrip("@") == bot_username:
-                if record.get("banned"):
-                    banned_count += 1
-                    restricted_workers.append({"phone": record["worker_phone"], "banned": True, "fail_count": record.get("fail_count", 0)})
-                elif record.get("fail_count", 0) > 0:
-                    restricted_count += 1
-                    restricted_workers.append({"phone": record["worker_phone"], "banned": False, "fail_count": record.get("fail_count", 0)})
-        bot["restriction_info"] = {
-            "restricted_count": restricted_count,
-            "banned_count": banned_count,
-            "total_issues": restricted_count + banned_count,
-            "restricted_workers": restricted_workers
-        }
-        # 更新Bot状态显示
-        # 优先检查Bot自身是否被平台限制（inline disabled/restricted）
         if bot.get("is_restricted"):
             bot["restriction_status"] = "platform_banned"
             bot["restriction_reason"] = bot.get("restricted_reason", "被平台检测禁止使用")
-        elif banned_count >= 3:
-            bot["restriction_status"] = "banned"
-        elif banned_count > 0 or restricted_count >= 3:
-            bot["restriction_status"] = "restricted"
         else:
             bot["restriction_status"] = "normal"
     return web.json_response(bot_list)

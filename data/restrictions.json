@@ -6752,6 +6752,16 @@
         "转发失败: Too many requests (已限制1次)"
       ],
       "last_fail": "2026-06-26T13:52:22.956484"
+    },
+    "+601169436553|kuaiyue50Bot": {
+      "worker_phone": "+601169436553",
+      "bot_username": "kuaiyue50Bot",
+      "fail_count": 1,
+      "banned": false,
+      "errors": [
+        "转发失败: Too many requests (已限制1次)"
+      ],
+      "last_fail": "2026-06-26T14:19:27.939152"
     }
   }
 }
