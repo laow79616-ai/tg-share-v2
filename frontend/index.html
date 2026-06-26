@@ -624,8 +624,7 @@
                     </div>
                     ${w.is_restricted ? `<div class="text-red" style="margin-top:6px;font-size:12px">⚠️ 限制原因: ${w.restricted_reason} (${w.restricted_at})</div>` : ''}
                     ${w.last_error ? `<div class="text-red" style="margin-top:6px;font-size:12px">错误: ${w.last_error}</div>` : ''}
-                    ${w.banned_bots && w.banned_bots.length > 0 ? `<div style="margin-top:6px;font-size:12px;color:#ff1744;background:#330000;padding:4px 8px;border-radius:4px;">🚫 已被禁止分享: ${w.banned_bots.map(b => '@' + b).join(', ')} <button class="btn btn-sm" style="background:#ff6600;color:#fff;margin-left:8px;padding:2px 6px;font-size:11px;" onclick="resetRestriction('${w.phone}')">重置</button></div>` : ''}
-                    ${w.restriction_count > 0 && (!w.banned_bots || w.banned_bots.length === 0) ? `<div style="margin-top:6px;font-size:12px;color:#ff9800;">⚠️ 已被限制 ${w.restriction_count} 次</div>` : ''}
+                    ${w.restriction_count > 0 ? `<div style="margin-top:6px;font-size:12px;color:${w.restriction_count >= 7 ? '#ff1744' : w.restriction_count >= 4 ? '#ff9800' : '#ffc107'};">⚠️ 已被限制 ${w.restriction_count} 次${w.restriction_count >= 7 ? ' (即将自动删除)' : ''}</div>` : ''}
                     ${w.daily_sends ? `<div class="text-gray" style="margin-top:4px;font-size:12px">今日发送: ${w.daily_sends}</div>` : ''}
                 </div>
             `).join('');
@@ -633,14 +632,14 @@
             const idle = workers.filter(w => w.runtime_status === "idle").length;
             const cooldown = workers.filter(w => w.in_cooldown).length;
             const offline = workers.filter(w => !w.connected).length;
-            const banned = workers.filter(w => w.banned_bots && w.banned_bots.length > 0).length;
+            const high_risk = workers.filter(w => w.restriction_count >= 7).length;
             const statsHtml = `<div class="card" style="margin-bottom:15px;padding:10px 20px;background:#0a1520;">
                 <span style="margin-right:20px;">总计: <strong style="color:#4fc3f7;">${workers.length}</strong> 个</span>
                 <span style="margin-right:20px;">在线: <strong style="color:#4caf50;">${online}</strong></span>
                 <span style="margin-right:20px;">空闲: <strong style="color:#2196f3;">${idle}</strong></span>
                 <span style="margin-right:20px;">冷却: <strong style="color:#ff9800;">${cooldown}</strong></span>
                 <span style="margin-right:20px;">离线: <strong style="color:#f44336;">${offline}</strong></span>
-                ${banned > 0 ? `<span>被禁止: <strong style="color:#ff1744;">${banned}</strong></span>` : ''}
+                
             </div>`;
             document.getElementById('workers-list').innerHTML = statsHtml + (html || '<div class="text-gray">暂无水军号</div>');
         }
@@ -1067,15 +1066,20 @@
                 successSends += b.success_sends || 0;
                 failSends += b.fail_sends || 0;
                 // 根据限制状态决定显示
-                var restrictionStatus = (b.restriction_info && b.restriction_info.total_issues > 0) ? b.restriction_status : '';
+                var restrictionStatus = b.restriction_status || '';
                 var statusClass;
-                if (restrictionStatus === 'banned') statusClass = 'badge-red';
+                if (restrictionStatus === 'platform_banned') statusClass = 'badge-red';
+                else if (restrictionStatus === 'banned') statusClass = 'badge-red';
                 else if (restrictionStatus === 'restricted') statusClass = 'badge-orange';
                 else statusClass = b.status === 'active' ? 'badge-green' : (b.status === 'invalid' ? 'badge-red' : 'badge-blue');
-                var statusText = restrictionStatus === 'banned' ? '🚫被禁止' : (restrictionStatus === 'restricted' ? '⚠️受限' : b.status);
+                var statusText;
+                if (restrictionStatus === 'platform_banned') statusText = '🚫平台禁止';
+                else if (restrictionStatus === 'banned') statusText = '🚫被禁止';
+                else if (restrictionStatus === 'restricted') statusText = '⚠️受限';
+                else statusText = b.status;
                 var restrictionDetail = '';
-                if (b.restriction_info && b.restriction_info.total_issues > 0) {
-                    restrictionDetail = '<br><small style="color:#ff6b6b;font-size:10px;">被' + b.restriction_info.banned_count + '个水军禁止, ' + b.restriction_info.restricted_count + '个受限</small>';
+                if (restrictionStatus === 'platform_banned') {
+                    restrictionDetail = '<br><small style="color:#ff1744;font-size:11px;font-weight:bold;">⛔ 已被平台检测禁止使用</small>';
                 }
                 const tokenShort = b.token.substring(0, 10) + '...';
                 const workerCount = (b.assigned_workers || []).length;
@@ -1092,9 +1096,11 @@
             }).join('');
             document.getElementById('bots-list').innerHTML = html || '<tr><td colspan="6">暂无Bot</td></tr>';
             // 统计被限制的Bot数量
+                var platformBanned = bots.filter(function(b) { return b.restriction_status === 'platform_banned'; }).length;
                 var restrictedBots = bots.filter(function(b) { return b.restriction_status === 'restricted'; }).length;
                 var bannedBots = bots.filter(function(b) { return b.restriction_status === 'banned'; }).length;
                 var statsHtml = '总计: ' + bots.length + ' 个Bot | 总发送: ' + totalSends + ' | 成功: ' + successSends + ' | 失败: ' + failSends;
+                if (platformBanned > 0) statsHtml += ' | <span style="color:#ff1744;font-weight:bold;">平台禁止: ' + platformBanned + '</span>';
                 if (bannedBots > 0) statsHtml += ' | <span style="color:#e74c3c;">被禁止: ' + bannedBots + '</span>';
                 if (restrictedBots > 0) statsHtml += ' | <span style="color:#f39c12;">受限: ' + restrictedBots + '</span>';
                 document.getElementById('bot-stats').innerHTML = statsHtml;

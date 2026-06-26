@@ -48,9 +48,15 @@ PROGRESSIVE_WAIT = {
     1: 1200,      # 第1次失败: 等待20分钟
     2: 3600,     # 第2次失败: 等待1小时
     3: 7200,     # 第3次失败: 等待2小时
-    4: -1,        # 第4次失败: 永久标记限制
+    4: 7200,     # 第4次失败: 等待2小时
+    5: 14400,    # 第5次失败: 等待4小时
+    6: 14400,    # 第6次失败: 等待4小时
+    7: 21600,    # 第7次失败: 等待6小时
+    8: 21600,    # 第8次失败: 等待6小时
+    9: 28800,    # 第9次失败: 等待8小时
+    10: -1,      # 第10次失败: 标记删除
 }
-MAX_FAILURES = 4  # 第4次直接标记限制
+MAX_FAILURES = 10  # 第10次直接标记删除
 
 
 class ShareWorker:
@@ -230,10 +236,10 @@ class ShareWorker:
             # 第4次(或更多): 永久标记限制
             self.is_dead = True
             self.is_restricted = True
-            self.restricted_reason = f"分享失败{self.rate_limit_count}次，永久标记限制"
+            self.restricted_reason = f"分享失败{self.rate_limit_count}次，标记删除"
             self.status = "dead"
             self.needs_disconnect = True
-            logger.error(f"[Worker-{self.worker_id}] ☠️ 水军号永久限制: 分享失败{self.rate_limit_count}次")
+            logger.error(f"[Worker-{self.worker_id}] ☠️ 水军号达到10次限制，标记删除: 分享失败{self.rate_limit_count}次")
             return
         # 第1-3次: 按等待时长进入冷却
         self.cooldown_until = time.time() + wait_time

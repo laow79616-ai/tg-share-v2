@@ -427,10 +427,8 @@ async def api_workers_list(request):
             w["cooldown_remaining"] = 0
     # 附加限制记录
     for w in worker_list:
-        restrictions = get_worker_restrictions(w.get("phone", ""))
-        banned_bots = [r["bot_username"] for r in restrictions if r.get("banned")]
-        w["banned_bots"] = banned_bots
-        w["restriction_count"] = sum(r.get("fail_count", 0) for r in restrictions)
+        # 只显示水军自身的限制次数（rate_limit_count）
+        w["restriction_count"] = w.get("rate_limit_count", 0)
     return web.json_response(worker_list)
 
 
@@ -817,6 +815,27 @@ def save_restrictions(data):
     """保存限制记录"""
     save_json(RESTRICTIONS_FILE, data)
 
+
+def auto_delete_dead_worker(worker_phone):
+    """当水军被限制达到10次时，自动从系统中删除"""
+    import shutil
+    logger.warning(f"[自动删除] 水军号 {worker_phone} 被限制达到10次，自动删除")
+    # 从workers_config中删除
+    data = load_json(WORKERS_CONFIG_FILE)
+    worker_list = data.get("workers", [])
+    data["workers"] = [w for w in worker_list if w.get("phone") != worker_phone]
+    save_json(WORKERS_CONFIG_FILE, data)
+    # 删除session文件
+    session_name = worker_phone.replace("+", "")
+    session_path = SESSIONS_DIR / f"{session_name}.session"
+    journal_path = SESSIONS_DIR / f"{session_name}.session-journal"
+    if session_path.exists():
+        session_path.unlink()
+        logger.info(f"[自动删除] 已删除session: {session_path}")
+    if journal_path.exists():
+        journal_path.unlink()
+    logger.info(f"[自动删除] 水军号 {worker_phone} 已从系统中完全删除")
+
 def record_worker_bot_failure(worker_phone, bot_username, error_msg):
     """记录水军+Bot组合的失败，超过3次标记为禁止"""
     data = load_restrictions()
@@ -882,7 +901,11 @@ async def api_bots_list(request):
             "restricted_workers": restricted_workers
         }
         # 更新Bot状态显示
-        if banned_count >= 3:
+        # 优先检查Bot自身是否被平台限制（inline disabled/restricted）
+        if bot.get("is_restricted"):
+            bot["restriction_status"] = "platform_banned"
+            bot["restriction_reason"] = bot.get("restricted_reason", "被平台检测禁止使用")
+        elif banned_count >= 3:
             bot["restriction_status"] = "banned"
         elif banned_count > 0 or restricted_count >= 3:
             bot["restriction_status"] = "restricted"
@@ -1261,8 +1284,13 @@ async def _run_send_scheduler_inner():
                     if getattr(workers[wid_try], 'is_dead', False):
                         continue
                     if getattr(workers[wid_try], 'needs_disconnect', False):
-                        await release_banned_worker(wid_try)
-                        workers[wid_try].needs_disconnect = False
+                        # 如果水军号被限制达到10次，自动删除
+                        if getattr(workers[wid_try], 'is_dead', False):
+                            auto_delete_dead_worker(workers[wid_try].phone)
+                            del workers[wid_try]
+                        else:
+                            await release_banned_worker(wid_try)
+                            workers[wid_try].needs_disconnect = False
                         continue
                 # 跳过banned组合过多的水军号（全局Bot池模式：超过80%的Bot被banned才跳过）
                 worker_phone_check = wc.get("phone", "")
