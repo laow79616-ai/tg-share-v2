@@ -148,7 +148,7 @@
         <div class="panel" id="panel-workers">
             <div class="flex-between mb-20">
                 <div class="section-title">水军管理</div>
-                <div class="flex"><button class="btn btn-success" onclick="connectAllWorkers()">&#x1F517; 一键全部连接</button> <button class="btn btn-warning" onclick="showBatchAssignBot()">&#x1F916; 批量分配Bot</button> <button class="btn" style="background:#9c27b0;color:#fff;" onclick="clearAllRestrictions()">🔄 清除所有限制</button> <button class="btn btn-primary" onclick="showAddWorker()">+ 添加水军</button></div>
+                <div class="flex"><button class="btn btn-success" onclick="connectAllWorkers()">&#x1F517; 一键全部连接</button> <button class="btn" style="background:#9c27b0;color:#fff;" onclick="clearAllRestrictions()">🔄 清除所有限制</button> <button class="btn btn-primary" onclick="showAddWorker()">+ 添加水军</button></div>
             </div>
 
             <div id="add-worker-form" style="display:none" class="card mb-20">
@@ -334,7 +334,7 @@
             </div>
             <div class="mb-10" id="bot-stats" style="font-size:13px;color:#8899aa;"></div>
             <table>
-                <thead><tr><th>编号</th><th>用户名</th><th>Token</th><th>分配水军</th><th>状态</th><th>操作</th></tr></thead>
+                <thead><tr><th>编号</th><th>用户名</th><th>Token</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody id="bots-list"></tbody>
             </table>
         </div>
@@ -1078,19 +1078,17 @@
                     restrictionDetail = '<br><small style="color:#ff1744;font-size:11px;font-weight:bold;">⛔ 已被平台检测禁止使用</small>';
                 }
                 const tokenShort = b.token.substring(0, 10) + '...';
-                const workerCount = (b.assigned_workers || []).length;
                 return '<tr>' +
                     '<td>' + b.number + '</td>' +
                     '<td>' + (b.username ? '@' + b.username : '-') + '</td>' +
                     '<td><code style="font-size:11px">' + tokenShort + '</code></td>' +
-                    '<td><span class="badge badge-blue">' + workerCount + ' 个</span></td>' +
                     '<td><span class="badge ' + statusClass + '">' + statusText + '</span>' + restrictionDetail + '</td>' +
                     '<td>' +
                         '<button class="btn btn-sm btn-primary" onclick="verifyBot(\'' + b.id + '\')">验证</button> ' +
                         '<button class="btn btn-sm btn-danger" onclick="deleteBot(\'' + b.id + '\')">删除</button>' +
                     '</td></tr>';
             }).join('');
-            document.getElementById('bots-list').innerHTML = html || '<tr><td colspan="6">暂无Bot</td></tr>';
+            document.getElementById('bots-list').innerHTML = html || '<tr><td colspan="5">暂无Bot</td></tr>';
             // 统计被限制的Bot数量
                 var platformBanned = bots.filter(function(b) { return b.restriction_status === 'platform_banned'; }).length;
                 var statsHtml = '总计: ' + bots.length + ' 个Bot | 总发送: ' + totalSends + ' | 成功: ' + successSends + ' | 失败: ' + failSends;

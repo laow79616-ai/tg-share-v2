@@ -913,7 +913,7 @@ async def api_bots_batch_import(request):
             "username": "",
             "number": next_number,
             "status": "pending",
-            "assigned_workers": [],
+            "enabled": True,
             "total_sends": 0,
             "success_sends": 0,
             "fail_sends": 0
@@ -941,6 +941,7 @@ async def api_bot_verify(request):
                     bot_info = result["result"]
                     bot["username"] = bot_info.get("username", "")
                     bot["status"] = "active"
+                    bot["enabled"] = True
                     save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
                     return web.json_response({"ok": True, "username": bot["username"]})
                 else:
@@ -964,9 +965,11 @@ async def api_bots_verify_all(request):
                     if result.get("ok"):
                         bot["username"] = result["result"].get("username", "")
                         bot["status"] = "active"
+                        bot["enabled"] = True
                         results["active"] += 1
                     else:
                         bot["status"] = "invalid"
+                        bot["enabled"] = False
                         results["invalid"] += 1
             except:
                 bot["status"] = "error"
@@ -1042,62 +1045,13 @@ async def api_restrictions_reset(request):
 
 @routes.post("/api/workers/assign-bots")
 async def api_workers_assign_bots(request):
-    """Assign multiple workers to multiple bots"""
-    body = await request.json()
-    worker_ids = body.get("worker_ids", [])
-    bot_ids = body.get("bot_ids", [])
-    if not worker_ids or not bot_ids:
-        return web.json_response({"ok": False, "error": "参数不完整"}, status=400)
-    bots_data = load_json(BOTS_CONFIG_FILE)
-    bot_list = bots_data.get("bots", [])
-    workers_data = load_json(WORKERS_CONFIG_FILE)
-    worker_list = workers_data.get("workers", [])
-    # Get selected bots info
-    selected_bots = [b for b in bot_list if b["id"] in bot_ids]
-    if not selected_bots:
-        return web.json_response({"ok": False, "error": "Bot不存在"}, status=404)
-    assigned = 0
-    for w in worker_list:
-        if w["id"] in worker_ids:
-            w["bot_ids"] = bot_ids
-            w["bot_tokens"] = [b["token"] for b in selected_bots]
-            usernames = [b.get("username", "") or str(b.get("number", "")) for b in selected_bots]
-            w["bot_username"] = ", ".join(usernames[:3]) + ("..." if len(usernames) > 3 else "")
-            w["bot_token"] = selected_bots[0]["token"]
-            w["assigned_bot_id"] = selected_bots[0]["id"]
-            assigned += 1
-            for b in selected_bots:
-                if w["id"] not in b.get("assigned_workers", []):
-                    b.setdefault("assigned_workers", []).append(w["id"])
-    save_json(WORKERS_CONFIG_FILE, {"workers": worker_list})
-    save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
-    return web.json_response({"ok": True, "assigned": assigned, "bots_count": len(bot_ids)})
+    """[Deprecated] 现在使用全局Bot池轮换，不再固定分配"""
+    return web.json_response({"ok": True, "message": "当前使用全局Bot池轮换机制，无需固定分配"})
 
 @routes.post("/api/workers/assign-bot")
 async def api_workers_assign_bot(request):
-    body = await request.json()
-    worker_ids = body.get("worker_ids", [])
-    bot_id = body.get("bot_id", "")
-    if not worker_ids or not bot_id:
-        return web.json_response({"ok": False, "error": "参数不完整"}, status=400)
-    bots_data = load_json(BOTS_CONFIG_FILE)
-    bot_list = bots_data.get("bots", [])
-    bot = next((b for b in bot_list if b["id"] == bot_id), None)
-    if not bot:
-        return web.json_response({"ok": False, "error": "Bot不存在"}, status=404)
-    workers_data = load_json(WORKERS_CONFIG_FILE)
-    worker_list = workers_data.get("workers", [])
-    assigned = 0
-    for w in worker_list:
-        if w["id"] in worker_ids:
-            w["bot_token"] = bot["token"]
-            w["bot_username"] = bot["username"]
-            w["assigned_bot_id"] = bot["id"]
-            assigned += 1
-    save_json(WORKERS_CONFIG_FILE, {"workers": worker_list})
-    bot["assigned_workers"] = list(set(bot.get("assigned_workers", []) + worker_ids))
-    save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
-    return web.json_response({"ok": True, "assigned": assigned})
+    """[Deprecated] 现在使用全局Bot池轮换，不再固定分配"""
+    return web.json_response({"ok": True, "message": "当前使用全局Bot池轮换机制，无需固定分配"})
 
 @routes.get("/api/config")
 async def api_config_get(request):
