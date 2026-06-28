@@ -88,17 +88,18 @@ class ShareWorker:
         self.daily_sends = 0
         self.last_error = ""
         # 限制标记
-        self.is_restricted = False
+        self.is_restricted = worker_config.get("is_restricted", False)
         self.restricted_at = None
         self.restricted_reason = ""
         self.is_dead = False
         self.needs_disconnect = False  # 永久死亡标记
         # 频率限制计数
-        self.rate_limit_count = 0  # 被限制次数
-        self.has_been_banned_24h = False  # 是否已经被24小时禁止过
+        self.rate_limit_count = worker_config.get("rate_limit_count", 0)  # 从配置加载历史限制次数
+        self.has_been_banned_24h = worker_config.get("has_been_banned_24h", False)  # 从配置加载
         self.banned_at = None  # 24小时禁止开始时间
         # 暂停机制
         self.cooldown_until = 0
+        self._on_rate_limit_changed = None  # 回调: 限制次数变化时通知外部持久化
         # 当前使用的Bot用户名（用于标记Bot限制）
         self.current_bot_username = ""
 
@@ -227,6 +228,9 @@ class ShareWorker:
         # 增加限制计数
         self.rate_limit_count += 1
         logger.warning(f"[Worker-{self.worker_id}] 分享失败第 {self.rate_limit_count} 次")
+        # 持久化限制次数
+        if self._on_rate_limit_changed:
+            self._on_rate_limit_changed(self.worker_id, self.rate_limit_count, self.has_been_banned_24h, self.is_restricted)
         # 决定本次等待时长: 显式传入的 duration 优先, 否则按递增表
         if duration is not None:
             wait_time = duration
@@ -236,6 +240,9 @@ class ShareWorker:
             # 第4次(或更多): 永久标记限制
             self.is_dead = True
             self.is_restricted = True
+            # 持久化限制状态
+            if self._on_rate_limit_changed:
+                self._on_rate_limit_changed(self.worker_id, self.rate_limit_count, self.has_been_banned_24h, self.is_restricted)
             self.restricted_reason = f"分享失败{self.rate_limit_count}次，标记删除"
             self.status = "dead"
             self.needs_disconnect = True
@@ -262,6 +269,9 @@ class ShareWorker:
     def mark_restricted(self, reason=""):
         """标记水军号被限制"""
         self.is_restricted = True
+        # 持久化限制状态
+        if self._on_rate_limit_changed:
+            self._on_rate_limit_changed(self.worker_id, self.rate_limit_count, self.has_been_banned_24h, self.is_restricted)
         self.restricted_at = datetime.now().isoformat()
         self.restricted_reason = reason
         self.status = "restricted"

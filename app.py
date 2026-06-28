@@ -67,6 +67,23 @@ logger = logging.getLogger("App")
 
 # ============ 全局状态 ============
 workers = {}  # worker_id -> ShareWorker
+
+def _persist_worker_rate_limit(worker_id, rate_limit_count, has_been_banned_24h, is_restricted):
+    """持久化水军的限制次数到配置文件"""
+    try:
+        data = load_json(WORKERS_CONFIG_FILE)
+        worker_list = data.get("workers", [])
+        for w in worker_list:
+            if w["id"] == worker_id:
+                w["rate_limit_count"] = rate_limit_count
+                w["has_been_banned_24h"] = has_been_banned_24h
+                w["is_restricted"] = is_restricted
+                break
+        save_json(WORKERS_CONFIG_FILE, {"workers": worker_list})
+    except Exception as e:
+        logger.error(f"持久化限制次数失败: {e}")
+
+
 bot_app = None  # Telegram Bot Application
 scheduler_task = None
 # 工作流活动日志
@@ -484,6 +501,7 @@ async def api_worker_connect(request):
         }
 
     worker = ShareWorker(wconfig, api_id, api_hash)
+    worker._on_rate_limit_changed = _persist_worker_rate_limit
     success = await worker.connect()
 
     if success:
@@ -529,6 +547,7 @@ async def api_workers_connect_all(request):
             }
         
         worker = ShareWorker(wconfig, api_id, api_hash)
+        worker._on_rate_limit_changed = _persist_worker_rate_limit
         try:
             success = await worker.connect()
             if success:
@@ -1023,6 +1042,17 @@ async def api_restrictions_list(request):
     records.sort(key=lambda r: r.get("fail_count", 0), reverse=True)
     return web.json_response(records)
 
+
+@routes.post("/api/workers/clear-errors")
+async def api_workers_clear_errors(request):
+    """清除所有水军的last_error"""
+    cleared = 0
+    for wid, w in workers.items():
+        if w.last_error:
+            w.last_error = ""
+            cleared += 1
+    return web.json_response({"ok": True, "message": f"已清除 {cleared} 个水军的错误信息"})
+
 @routes.post("/api/restrictions/reset")
 async def api_restrictions_reset(request):
     """重置限制记录"""
@@ -1244,6 +1274,7 @@ async def _run_send_scheduler_inner():
                             "password": proxy.get("password", "")
                         }
                     w = ShareWorker(wc, api_id, api_hash)
+                    w._on_rate_limit_changed = _persist_worker_rate_limit
                     try:
                         ok = await w.connect()
                     except Exception:
