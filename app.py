@@ -548,6 +548,7 @@ async def api_workers_connect_all(request):
         
         worker = ShareWorker(wconfig, api_id, api_hash)
         worker._on_rate_limit_changed = _persist_worker_rate_limit
+        worker._on_dead_detected = _on_dead_detected
         try:
             success = await worker.connect()
             if success:
@@ -854,6 +855,16 @@ def auto_delete_dead_worker(worker_phone):
     if journal_path.exists():
         journal_path.unlink()
     logger.info(f"[自动删除] 水军号 {worker_phone} 已从系统中完全删除")
+
+
+def _on_dead_detected(worker_id, phone, reason):
+    """当检测到水军号死亡时自动删除"""
+    logger.warning(f"[自动删除-死亡检测] 水军号 {phone} 被TG平台标记死亡: {reason}")
+    auto_delete_dead_worker(phone)
+    # 从内存中的workers字典删除
+    if worker_id in workers:
+        del workers[worker_id]
+    logger.info(f"[自动删除-死亡检测] 水军号 {phone} 已从系统完全移除")
 
 def record_worker_bot_failure(worker_phone, bot_username, error_msg):
     """记录水军+Bot组合的失败，超过3次标记为禁止"""
@@ -1275,6 +1286,7 @@ async def _run_send_scheduler_inner():
                         }
                     w = ShareWorker(wc, api_id, api_hash)
                     w._on_rate_limit_changed = _persist_worker_rate_limit
+                    w._on_dead_detected = _on_dead_detected
                     try:
                         ok = await w.connect()
                     except Exception:

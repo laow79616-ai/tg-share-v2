@@ -35,7 +35,9 @@ from telethon.errors import (
     PeerFloodError, UsernameNotOccupiedError,
     ChatWriteForbiddenError, UserBannedInChannelError,
     InputUserDeactivatedError, UserIsBlockedError,
-    BotInlineDisabledError, QueryIdInvalidError
+    BotInlineDisabledError, QueryIdInvalidError,
+    AuthKeyUnregisteredError, UserDeactivatedBanError,
+    PhoneNumberBannedError
 )
 import socks
 
@@ -100,6 +102,7 @@ class ShareWorker:
         # 暂停机制
         self.cooldown_until = 0
         self._on_rate_limit_changed = None  # 回调: 限制次数变化时通知外部持久化
+        self._on_dead_detected = None  # 回调: 检测到账号死亡时通知外部自动删除
         # 当前使用的Bot用户名（用于标记Bot限制）
         self.current_bot_username = ""
 
@@ -164,10 +167,14 @@ class ShareWorker:
         await self.client.connect()
 
         if not await self.client.is_user_authorized():
-            logger.error(f"[Worker-{self.worker_id}] 水军号 {self.phone} 未登录")
-            self.status = "error"
-            self.last_error = "未登录"
+            logger.error(f"[Worker-{self.worker_id}] ☠️ 水军号 {self.phone} 未登录(session失效/账号被封)")
+            self.status = "dead"
+            self.is_dead = True
+            self.last_error = "账号已死: session失效或被TG封禁"
             self._connected = False
+            # 触发自动删除回调
+            if hasattr(self, '_on_dead_detected') and self._on_dead_detected:
+                self._on_dead_detected(self.worker_id, self.phone, "session失效/未登录")
             return False
 
         me = await self.client.get_me()
@@ -567,6 +574,15 @@ class ShareWorker:
             err_msg = str(e)
             if "disconnected" in err_msg.lower() or "connection" in err_msg.lower():
                 self._connected = False
+            # 检查是否是账号死亡（TG平台封禁）
+            if "deactivated" in err_msg.lower() or "auth_key_unregistered" in err_msg.lower() or "phone_number_banned" in err_msg.lower():
+                logger.error(f"[Worker-{self.worker_id}] ☠️ 水军号 {self.phone} 在发送中被检测到已死: {e}")
+                self.status = "dead"
+                self.is_dead = True
+                self.last_error = f"账号已死: {e}"
+                if hasattr(self, '_on_dead_detected') and self._on_dead_detected:
+                    self._on_dead_detected(self.worker_id, self.phone, str(e))
+                return False, f"账号已死: {e}", bot_restricted
             # 检查是否是限制相关的错误
             if "banned" in err_msg.lower() or "restricted" in err_msg.lower() or "spam" in err_msg.lower():
                 self.mark_restricted(f"被限制: {e}")
