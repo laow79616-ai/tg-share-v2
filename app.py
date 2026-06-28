@@ -86,6 +86,7 @@ def _persist_worker_rate_limit(worker_id, rate_limit_count, has_been_banned_24h,
 
 bot_app = None  # Telegram Bot Application
 scheduler_task = None
+reconnect_task = None  # 后台自动重连任务
 # 工作流活动日志
 activity_log = []  # 最近50条活动记录
 current_activity = {}  # 当前正在进行的操作
@@ -1137,10 +1138,14 @@ async def api_send_start(request):
 @routes.post("/api/send/stop")
 async def api_send_stop(request):
     """停止发送任务"""
-    global scheduler_task
+    global scheduler_task, reconnect_task
     if scheduler_task and not scheduler_task.done():
         scheduler_task.cancel()
         scheduler_task = None
+    # 停止重连任务
+    if reconnect_task and not reconnect_task.done():
+        reconnect_task.cancel()
+        reconnect_task = None
     # 停止后断开所有水军连接（水军只在调度器运行时保持在线）
     disconnected = 0
     for wid in list(workers.keys()):
@@ -1184,6 +1189,51 @@ async def api_send_activity(request):
 
 
 # ============ 发送调度器 ============
+
+async def _auto_reconnect_loop():
+    """后台自动重连循环：每60秒检查所有水军连接状态，掉线自动重连"""
+    config = load_json(BOT_CONFIG_FILE)
+    api_id = config.get("api_id")
+    api_hash = config.get("api_hash")
+    if not api_id or not api_hash:
+        return
+    while True:
+        await asyncio.sleep(60)  # 每60秒检查一次
+        workers_data = load_json(WORKERS_CONFIG_FILE)
+        worker_configs = workers_data.get("workers", [])
+        reconnected = 0
+        for wc in worker_configs:
+            wid = wc["id"]
+            # 跳过已死的
+            if wid in workers and getattr(workers[wid], 'is_dead', False):
+                continue
+            # 检查是否掉线
+            if wid in workers and workers[wid]._connected:
+                continue  # 在线，跳过
+            # 需要重连
+            proxy = proxy_pool.get_proxy_for_worker(wid)
+            if proxy:
+                wc["proxy"] = {
+                    "type": proxy["type"],
+                    "host": proxy["host"],
+                    "port": proxy["port"],
+                    "username": proxy.get("username", ""),
+                    "password": proxy.get("password", "")
+                }
+            w = ShareWorker(wc, api_id, api_hash)
+            w._on_rate_limit_changed = _persist_worker_rate_limit
+            w._on_dead_detected = _on_dead_detected
+            try:
+                ok = await w.connect()
+                if ok:
+                    workers[wid] = w
+                    reconnected += 1
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        if reconnected > 0:
+            logger.info(f"[自动重连] 重连了 {reconnected} 个掉线水军")
+
 async def run_send_scheduler():
     """发送调度器 - 按需连接水军号，逐个发送（带异常保护）"""
     try:
