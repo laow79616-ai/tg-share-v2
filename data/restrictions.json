@@ -844,6 +844,16 @@
         "转发失败: Too many requests (已限制1次)"
       ],
       "last_fail": "2026-06-28T12:56:42.749568"
+    },
+    "+6285692188372|kuaiyue93Bot": {
+      "worker_phone": "+6285692188372",
+      "bot_username": "kuaiyue93Bot",
+      "fail_count": 1,
+      "banned": false,
+      "errors": [
+        "转发失败: Too many requests (已限制1次)"
+      ],
+      "last_fail": "2026-06-28T13:21:00.136856"
     }
   }
 }
