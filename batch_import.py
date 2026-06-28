@@ -51,7 +51,7 @@ FEMALE_NAMES = [
 # 统一简介
 DEFAULT_BIO = """https://kuaiyue.vip
 https://t.me/kuaiyue9
-咨询热线：@kuaiyue777"""
+咨询热线：@kuaiyue123456789"""
 
 
 def load_api_configs():
