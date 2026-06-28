@@ -1141,7 +1141,17 @@ async def api_send_stop(request):
     if scheduler_task and not scheduler_task.done():
         scheduler_task.cancel()
         scheduler_task = None
-    return web.json_response({"ok": True, "message": "发送任务已停止"})
+    # 停止后断开所有水军连接（水军只在调度器运行时保持在线）
+    disconnected = 0
+    for wid in list(workers.keys()):
+        try:
+            if workers[wid]._connected:
+                await workers[wid].disconnect()
+                disconnected += 1
+        except Exception:
+            pass
+    logger.info(f"[调度器停止] 已断开 {disconnected} 个水军连接")
+    return web.json_response({"ok": True, "message": f"发送任务已停止，已断开 {disconnected} 个水军连接"})
 
 
 @routes.get("/api/send/status")
@@ -1478,6 +1488,16 @@ async def _run_send_scheduler_inner():
     current_activity = {"status": "已完成", "worker": "", "target": "", "step": f"共发送 {sent_count} 条"}
     log_activity("调度器完成", f"共发送 {sent_count} 条", status="info")
     logger.info(f"=== 发送调度器完成，共发送 {sent_count} 条 ===")
+    # 调度器完成后断开所有水军连接
+    disconnected = 0
+    for wid in list(workers.keys()):
+        try:
+            if workers[wid]._connected:
+                await workers[wid].disconnect()
+                disconnected += 1
+        except Exception:
+            pass
+    logger.info(f"[调度] 调度器结束，已断开 {disconnected} 个水军连接")
 
 
 async def cleanup_connections():
