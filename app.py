@@ -736,6 +736,11 @@ async def api_targets_add(request):
     return web.json_response({"ok": True, "count": len(targets)})
 
 
+@routes.delete("/api/targets/all")
+async def api_targets_delete_all(request):
+    save_json(TARGETS_FILE, {"targets": []})
+    return web.json_response({"ok": True, "message": "所有目标用户已删除"})
+
 @routes.delete("/api/targets/{username}")
 async def api_targets_delete(request):
     username = request.match_info["username"]

@@ -189,6 +189,7 @@
         <div class="panel" id="panel-targets">
             <div class="flex-between mb-20">
                 <div class="section-title">目标用户</div>
+                <button class="btn btn-danger" onclick="deleteAllTargets()" style="padding:8px 16px;font-size:13px;">🗑 一键删除所有用户</button>
             </div>
             <div style="display:flex;gap:30px;padding:12px 20px;background:rgba(0,150,255,0.1);border:1px solid rgba(0,150,255,0.3);border-radius:8px;margin-bottom:16px;font-size:14px;color:#8899aa;">
                 总计: <b id="targets-total" style="color:#fff">0</b> 个 &nbsp;&nbsp; 未分享: <b id="targets-pending" style="color:#f0ad4e">0</b> 个 &nbsp;&nbsp; 已发送: <b id="targets-sent" style="color:#5cb85c">0</b> 个 &nbsp;&nbsp; 失败: <b id="targets-failed" style="color:#d9534f">0</b> 个
@@ -805,6 +806,20 @@
             });
             document.getElementById('targets-input').value = '';
             loadTargets();
+        }
+
+        async function deleteAllTargets() {
+            if (!confirm("确定要删除所有目标用户吗？此操作不可恢复！")) return;
+            try {
+                const res = await fetch("/api/targets/all", {method: "DELETE", headers: {"X-Auth-Token": localStorage.getItem("token")}});
+                const data = await res.json();
+                if (data.ok) {
+                    alert("所有目标用户已删除");
+                    loadTargets();
+                } else {
+                    alert("删除失败: " + (data.error || "未知错误"));
+                }
+            } catch(e) { alert("请求失败: " + e.message); }
         }
 
         async function deleteTarget(username) {
