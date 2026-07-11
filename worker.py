@@ -192,13 +192,15 @@ class ShareWorker:
         for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):
             try:
                 if self.client:
-                    await self.client.connect()
+                    await asyncio.wait_for(self.client.connect(), timeout=20)
                     if self.client.is_connected() and await self.client.is_user_authorized():
                         logger.info(f"[Worker-{self.worker_id}] 重连成功")
                         self._connected = True
                         return True
                 else:
                     return await self.connect()
+            except asyncio.TimeoutError:
+                logger.warning(f"[Worker-{self.worker_id}] 重连尝试 {attempt} 超时(20s)")
             except Exception as e:
                 logger.warning(f"[Worker-{self.worker_id}] 重连尝试 {attempt} 失败: {e}")
             await asyncio.sleep(RECONNECT_DELAY)
@@ -291,10 +293,26 @@ class ShareWorker:
                 return None, False
 
             clean_username = username.lstrip("@")
-            result = await self.client(ResolveUsernameRequest(clean_username))
+            try:
+                result = await asyncio.wait_for(
+                    self.client(ResolveUsernameRequest(clean_username)),
+                    timeout=30
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[Worker-{self.worker_id}] ⏰ 搜索用户超时(30s): @{username}")
+                self._connected = False
+                return None, False
 
             if result and result.peer:
-                user = await self.client.get_entity(result.peer)
+                try:
+                    user = await asyncio.wait_for(
+                        self.client.get_entity(result.peer),
+                        timeout=15
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"[Worker-{self.worker_id}] ⏰ get_entity超时(15s): @{username}")
+                    self._connected = False
+                    return None, False
                 if hasattr(user, 'username') and user.username:
                     if user.username.lower() == clean_username.lower():
                         logger.info(f"[Worker-{self.worker_id}] ✅ 找到用户: @{user.username}")

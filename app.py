@@ -1412,7 +1412,14 @@ async def _run_send_scheduler_inner():
         log_activity("测试目标", f"验证 @{target['username']} 是否存在", worker_phone=test_wconfig['phone'], target=target['username'])
         logger.info(f"[调度] 测试目标 @{target['username']}（使用 {test_wconfig['phone']}）")
         try:
-            user_entity, matched = await test_worker.search_user(target["username"])
+            user_entity, matched = await asyncio.wait_for(
+                test_worker.search_user(target["username"]),
+                timeout=45
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[调度] ⏰ 测试搜索超时(45s): @{target['username']}，跳过该水军号")
+            test_worker._connected = False
+            user_entity, matched = None, False
         except Exception as e:
             logger.warning(f"[调度] 测试搜索异常: {e}")
             user_entity, matched = None, False
@@ -1460,7 +1467,14 @@ async def _run_send_scheduler_inner():
 
             logger.info(f"[调度] 水军 {wconfig_send['phone']} → @{target['username']}（第{attempt+1}次）")
             try:
-                success, msg = await worker_send.execute_share_task(target["username"], ad_index=0)
+                success, msg = await asyncio.wait_for(
+                    worker_send.execute_share_task(target["username"], ad_index=0),
+                    timeout=90
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[调度] ⏰ 发送任务超时(90s): @{target['username']}，标记水军号断开")
+                success, msg = False, "发送任务超时(90s)"
+                worker_send._connected = False
             except Exception as task_err:
                 logger.error(f"[调度] 执行任务异常: {task_err}")
                 success, msg = False, f"任务异常: {task_err}"
