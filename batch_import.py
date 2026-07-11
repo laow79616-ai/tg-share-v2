@@ -415,7 +415,7 @@ async def api_batch_import_workers(request):
         # 生成名字和用户名
         display_name = get_available_name() + "-快约到家欢迎您"
         username_num = get_next_username_number()
-        target_username = f"kuaiyue{username_num}Bot"
+        target_username = f"kuaiyue{username_num}"
         
         # 分配头像
         avatar_file = get_unused_avatar()
@@ -545,7 +545,7 @@ async def api_setup_profiles(request):
                     # 用户名可能被占用，尝试下一个
                     for retry in range(5):
                         alt_num = get_next_username_number()
-                        alt_username = f"kuaiyue{alt_num}Bot"
+                        alt_username = f"kuaiyue{alt_num}"
                         try:
                             await client(UpdateUsernameRequest(username=alt_username))
                             worker["target_username"] = alt_username
