@@ -1264,7 +1264,7 @@
             try {
                 const btn = event.target;
                 btn.disabled = true;
-                btn.textContent = '&#x23f3; 设置中...';
+                btn.textContent = '⏳ 设置中...';
                 
                 const res = await fetch(API + '/api/workers/setup-profiles', {method: 'POST'});
                 const data = await res.json();
@@ -1277,7 +1277,7 @@
                 }
                 
                 btn.disabled = false;
-                btn.textContent = '&#x1f527; 一键设置资料';
+                btn.textContent = '🔧 一键设置资料';
             } catch(e) {
                 alert('请求失败: ' + e.message);
             }
