@@ -759,21 +759,39 @@
                 alert('❌ 请求失败: ' + e.message);
             }
         }
+        let targetsPage = 1;
+        const TARGETS_PER_PAGE = 50;
+        let allTargets = [];
         async function loadTargets() {
             const r = await fetch(API + '/api/targets');
-            const targets = await r.json();
-            // 按状态分组：sent在前，failed次之，pending最后；同组内按时间倒序
-            const statusOrder = {'sent': 0, 'failed': 1, 'pending': 2};
-            targets.sort((a, b) => {
+            allTargets = await r.json();
+            // 排序：pending在前，sent次之，failed最后
+            const statusOrder = {"pending": 0, "sent": 1, "failed": 2};
+            allTargets.sort((a, b) => {
                 const sa = statusOrder[a.status] ?? 2;
                 const sb = statusOrder[b.status] ?? 2;
                 if (sa !== sb) return sa - sb;
-                // 同状态按时间倒序
                 const ta = a.sent_at || '';
                 const tb = b.sent_at || '';
                 return tb.localeCompare(ta);
             });
-            const html = targets.map(t => `
+            targetsPage = 1;
+            renderTargetsPage();
+        }
+        function renderTargetsPage() {
+            const total = allTargets.length;
+            const pending = allTargets.filter(t => t.status === 'pending').length;
+            const sent = allTargets.filter(t => t.status === 'sent').length;
+            const failed = allTargets.filter(t => t.status === 'failed').length;
+            document.getElementById('targets-total').textContent = total;
+            document.getElementById('targets-pending').textContent = pending;
+            document.getElementById('targets-sent').textContent = sent;
+            document.getElementById('targets-failed').textContent = failed;
+            const start = (targetsPage - 1) * TARGETS_PER_PAGE;
+            const end = start + TARGETS_PER_PAGE;
+            const pageTargets = allTargets.slice(start, end);
+            const totalPages = Math.ceil(total / TARGETS_PER_PAGE);
+            const html = pageTargets.map(t => `
                 <tr>
                     <td>@${t.username}</td>
                     <td><span class="badge ${t.status === 'sent' ? 'badge-green' : t.status === 'failed' ? 'badge-red' : 'badge-yellow'}">${t.status}</span></td>
@@ -784,15 +802,26 @@
                 </tr>
             `).join('');
             document.getElementById('targets-list').innerHTML = html;
-            // 更新统计
-            const total = targets.length;
-            const pending = targets.filter(t => t.status === 'pending').length;
-            const sent = targets.filter(t => t.status === 'sent').length;
-            const failed = targets.filter(t => t.status === 'failed').length;
-            document.getElementById('targets-total').textContent = total;
-            document.getElementById('targets-pending').textContent = pending;
-            document.getElementById('targets-sent').textContent = sent;
-            document.getElementById('targets-failed').textContent = failed;
+            // 分页控件
+            let paginationHtml = `<div style="text-align:center;margin:15px 0;">`;
+            paginationHtml += `<button class="btn btn-sm" onclick="targetsPageGo(-1)" ${targetsPage <= 1 ? 'disabled' : ''}>上一页</button>`;
+            paginationHtml += ` <span style="margin:0 10px;">第 ${targetsPage}/${totalPages} 页 (共${total}条)</span> `;
+            paginationHtml += `<button class="btn btn-sm" onclick="targetsPageGo(1)" ${targetsPage >= totalPages ? 'disabled' : ''}>下一页</button>`;
+            paginationHtml += `</div>`;
+            let paginationEl = document.getElementById('targets-pagination');
+            if (!paginationEl) {
+                paginationEl = document.createElement('div');
+                paginationEl.id = 'targets-pagination';
+                document.getElementById('targets-list').parentElement.parentElement.appendChild(paginationEl);
+            }
+            paginationEl.innerHTML = paginationHtml;
+        }
+        function targetsPageGo(dir) {
+            const totalPages = Math.ceil(allTargets.length / TARGETS_PER_PAGE);
+            targetsPage += dir;
+            if (targetsPage < 1) targetsPage = 1;
+            if (targetsPage > totalPages) targetsPage = totalPages;
+            renderTargetsPage();
         }
 
         async function addTargets() {
