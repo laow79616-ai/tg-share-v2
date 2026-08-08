@@ -515,11 +515,25 @@
 
         // Tab切换
         function switchTab(name) {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-            event.target.classList.add('active');
-            document.getElementById('panel-' + name).classList.add('active');
-            loadTabData(name);
+            try {
+                document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+                document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+                // Find the clicked tab by matching onclick content
+                var tabs = document.querySelectorAll('.tab');
+                for (var i = 0; i < tabs.length; i++) {
+                    var onclick = tabs[i].getAttribute('onclick') || '';
+                    if (onclick.indexOf(name) > -1) {
+                        tabs[i].classList.add('active');
+                        break;
+                    }
+                }
+                var panel = document.getElementById('panel-' + name);
+                if (panel) panel.classList.add('active');
+                loadTabData(name);
+            } catch(e) {
+                console.error('switchTab error:', e);
+                loadTabData(name);
+            }
         }
 
         function loadTabData(name) {
@@ -763,65 +777,58 @@
         const TARGETS_PER_PAGE = 50;
         let allTargets = [];
         async function loadTargets() {
-            const r = await fetch(API + '/api/targets');
-            allTargets = await r.json();
-            // 排序：pending在前，sent次之，failed最后
-            const statusOrder = {"pending": 0, "sent": 1, "failed": 2};
-            allTargets.sort((a, b) => {
-                const sa = statusOrder[a.status] ?? 2;
-                const sb = statusOrder[b.status] ?? 2;
-                if (sa !== sb) return sa - sb;
-                const ta = a.sent_at || '';
-                const tb = b.sent_at || '';
-                return tb.localeCompare(ta);
-            });
-            targetsPage = 1;
-            renderTargetsPage();
-        }
-        function renderTargetsPage() {
-            const total = allTargets.length;
-            const pending = allTargets.filter(t => t.status === 'pending').length;
-            const sent = allTargets.filter(t => t.status === 'sent').length;
-            const failed = allTargets.filter(t => t.status === 'failed').length;
-            document.getElementById('targets-total').textContent = total;
-            document.getElementById('targets-pending').textContent = pending;
-            document.getElementById('targets-sent').textContent = sent;
-            document.getElementById('targets-failed').textContent = failed;
-            const start = (targetsPage - 1) * TARGETS_PER_PAGE;
-            const end = start + TARGETS_PER_PAGE;
-            const pageTargets = allTargets.slice(start, end);
-            const totalPages = Math.ceil(total / TARGETS_PER_PAGE);
-            const html = pageTargets.map(t => `
-                <tr>
-                    <td>@${t.username}</td>
-                    <td><span class="badge ${t.status === 'sent' ? 'badge-green' : t.status === 'failed' ? 'badge-red' : 'badge-yellow'}">${t.status}</span></td>
-                    <td class="text-gray">${t.bot_username ? '@' + t.bot_username : '-'}</td>
-                    <td class="text-gray">${t.sent_at || '-'}</td>
-                    <td class="text-gray">${t.result || '-'}</td>
-                    <td><button class="btn btn-sm btn-danger" onclick="deleteTarget('${t.username}')">删除</button></td>
-                </tr>
-            `).join('');
-            document.getElementById('targets-list').innerHTML = html;
-            // 分页控件
-            let paginationHtml = `<div style="text-align:center;margin:15px 0;">`;
-            paginationHtml += `<button class="btn btn-sm" onclick="targetsPageGo(-1)" ${targetsPage <= 1 ? 'disabled' : ''}>上一页</button>`;
-            paginationHtml += ` <span style="margin:0 10px;">第 ${targetsPage}/${totalPages} 页 (共${total}条)</span> `;
-            paginationHtml += `<button class="btn btn-sm" onclick="targetsPageGo(1)" ${targetsPage >= totalPages ? 'disabled' : ''}>下一页</button>`;
-            paginationHtml += `</div>`;
-            let paginationEl = document.getElementById('targets-pagination');
-            if (!paginationEl) {
-                paginationEl = document.createElement('div');
-                paginationEl.id = 'targets-pagination';
-                document.getElementById('targets-list').parentElement.parentElement.appendChild(paginationEl);
+            try {
+                var url = API + '/api/targets?page=' + targetsPage + '&per_page=' + TARGETS_PER_PAGE;
+                var r = await fetch(url);
+                if (r.status !== 200) { console.error('loadTargets: status', r.status); return; }
+                var data = await r.json();
+                var pageTargets = data.targets || [];
+                var total = data.total || 0;
+                var pending = data.pending || 0;
+                var sent = data.sent || 0;
+                var failed = data.failed || 0;
+                var filteredTotal = data.filtered_total || total;
+                document.getElementById('targets-total').textContent = total;
+                document.getElementById('targets-pending').textContent = pending;
+                document.getElementById('targets-sent').textContent = sent;
+                document.getElementById('targets-failed').textContent = failed;
+                var totalPages = Math.ceil(filteredTotal / TARGETS_PER_PAGE) || 1;
+                var html = pageTargets.map(function(t) {
+                    var statusClass = t.status === 'sent' ? 'badge-green' : (t.status === 'failed' ? 'badge-red' : 'badge-yellow');
+                    var bot = t.bot_username ? ('@' + t.bot_username) : '-';
+                    var sentAt = t.sent_at || '-';
+                    var result = t.result || '-';
+                    return '<tr>'
+                        + '<td>@' + t.username + '</td>'
+                        + '<td><span class="badge ' + statusClass + '">' + t.status + '</span></td>'
+                        + '<td class="text-gray">' + bot + '</td>'
+                        + '<td class="text-gray">' + sentAt + '</td>'
+                        + '<td class="text-gray">' + result + '</td>'
+                        + '<td><button class="btn btn-sm btn-danger" onclick="deleteTarget(\'' + t.username + '\')">\u5220\u9664</button></td>'
+                        + '</tr>';
+                }).join('');
+                document.getElementById('targets-list').innerHTML = html;
+                var pgHtml = '<div style="text-align:center;margin:15px 0;">';
+                pgHtml += '<button class="btn btn-sm" onclick="targetsPageGo(-1)" ' + (targetsPage <= 1 ? 'disabled' : '') + '>\u4e0a\u4e00\u9875</button>';
+                pgHtml += ' <span style="margin:0 10px;">\u7b2c ' + targetsPage + '/' + totalPages + ' \u9875 (\u5171' + filteredTotal + '\u6761)</span> ';
+                pgHtml += '<button class="btn btn-sm" onclick="targetsPageGo(1)" ' + (targetsPage >= totalPages ? 'disabled' : '') + '>\u4e0b\u4e00\u9875</button>';
+                pgHtml += '</div>';
+                var pgEl = document.getElementById('targets-pagination');
+                if (pgEl === null) {
+                    pgEl = document.createElement('div');
+                    pgEl.id = 'targets-pagination';
+                    document.getElementById('targets-list').parentElement.parentElement.appendChild(pgEl);
+                }
+                pgEl.innerHTML = pgHtml;
+            } catch(e) {
+                console.error('loadTargets exception:', e.message, e.stack);
             }
-            paginationEl.innerHTML = paginationHtml;
         }
+        function renderTargetsPage() { loadTargets(); }
         function targetsPageGo(dir) {
-            const totalPages = Math.ceil(allTargets.length / TARGETS_PER_PAGE);
             targetsPage += dir;
             if (targetsPage < 1) targetsPage = 1;
-            if (targetsPage > totalPages) targetsPage = totalPages;
-            renderTargetsPage();
+            loadTargets();
         }
 
         async function addTargets() {
@@ -834,6 +841,7 @@
                 body: JSON.stringify({usernames})
             });
             document.getElementById('targets-input').value = '';
+            targetsPage = 1;
             loadTargets();
         }
 

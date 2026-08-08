@@ -363,11 +363,7 @@ async def index(request):
     """前端页面"""
     frontend_path = Path("/root/tg_share_v2/frontend/index.html")
     if frontend_path.exists():
-        resp = web.FileResponse(frontend_path)
-        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        resp.headers["Pragma"] = "no-cache"
-        resp.headers["Expires"] = "0"
-        return resp
+        return web.FileResponse(frontend_path)
     return web.Response(text="tg_share_v2 running", content_type="text/html")
 
 
@@ -718,47 +714,8 @@ async def api_ads_delete(request):
 @routes.get("/api/targets")
 async def api_targets_list(request):
     data = load_json(TARGETS_FILE)
-    targets = data.get("targets", [])
-    # 支持服务端分页
-    page = int(request.query.get("page", "0"))
-    per_page = int(request.query.get("per_page", "0"))
-    status_filter = request.query.get("status", "")
-    # 统计
-    total = len(targets)
-    pending = sum(1 for t in targets if t.get("status") == "pending")
-    sent = sum(1 for t in targets if t.get("status") == "sent")
-    failed = sum(1 for t in targets if t.get("status") == "failed")
-    # 排序：pending在前，sent按时间倒序，failed按时间倒序
-    pending_list = [t for t in targets if t.get("status") == "pending"]
-    sent_list = sorted([t for t in targets if t.get("status") == "sent"], key=lambda t: t.get("sent_at") or "", reverse=True)
-    failed_list = sorted([t for t in targets if t.get("status") == "failed"], key=lambda t: t.get("sent_at") or "", reverse=True)
-    # 过滤
-    if status_filter == "pending":
-        sorted_targets = pending_list
-    elif status_filter == "sent":
-        sorted_targets = sent_list
-    elif status_filter == "failed":
-        sorted_targets = failed_list
-    else:
-        sorted_targets = pending_list + sent_list + failed_list
-    filtered_total = len(sorted_targets)
-    # 分页
-    if page > 0 and per_page > 0:
-        start = (page - 1) * per_page
-        end = start + per_page
-        page_targets = sorted_targets[start:end]
-    else:
-        page_targets = sorted_targets
-    return web.json_response({
-        "targets": page_targets,
-        "total": total,
-        "filtered_total": filtered_total,
-        "pending": pending,
-        "sent": sent,
-        "failed": failed,
-        "page": page,
-        "per_page": per_page
-    })
+    return web.json_response(data.get("targets", []))
+
 
 @routes.post("/api/targets")
 async def api_targets_add(request):
