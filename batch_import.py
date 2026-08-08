@@ -2,7 +2,7 @@
 批量导入水军号模块
 - API配置管理（多组api_id/api_hash）
 - ZIP批量导入session文件
-- 一键设置资料（名字/用户名/简介/头像）
+- 手动输入资料 + 一键设置（名字/用户名前缀/简介/头像）
 - 头像库管理
 """
 import os
@@ -21,7 +21,7 @@ from config import save_json  # 原子写入, 避免并发/崩溃损坏配置文
 logger = logging.getLogger("BatchImport")
 
 # 配置文件路径
-DATA_DIR = Path("/root/tg_share_v2/data")
+DATA_DIR = Path(os.environ.get("TG_SHARE_DATA_DIR", Path(__file__).resolve().parent / "data"))
 API_CONFIGS_FILE = DATA_DIR / "api_configs.json"
 AVATARS_DIR = DATA_DIR / "avatars"
 IMPORT_TEMP_DIR = DATA_DIR / "import_temp"
@@ -467,38 +467,62 @@ async def api_batch_import_workers(request):
 
 # --- 一键设置资料 ---
 async def api_setup_profiles(request):
-    """一键设置所有未设置资料的水军号"""
+    """手动输入资料后，一键设置所有未设置资料的水军号"""
     from telethon import TelegramClient
     from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
     from telethon.tl.functions.photos import UploadProfilePhotoRequest
-    
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    # 用户手动输入的资料
+    first_name = (body.get("first_name") or "").strip()
+    last_name = (body.get("last_name") or "").strip()
+    username_prefix = (body.get("username_prefix") or "kuaiyue").strip()
+    bio = (body.get("bio") or "").strip() or DEFAULT_BIO
+    use_random_avatar = body.get("use_random_avatar", True)
+
+    if not first_name:
+        return web.json_response({"error": "名字不能为空", "success": False}, status=400)
+
     workers_file = DATA_DIR / "workers_config.json"
     if not workers_file.exists():
-        return web.json_response({"error": "没有水军号配置"}, status=400)
-    
+        return web.json_response({"error": "没有水军号配置", "success": False}, status=400)
+
     workers_data = json.loads(workers_file.read_text(encoding='utf-8'))
     workers = workers_data.get("workers", [])
-    
-    # 找出未设置资料的
+
+    # 只处理未设置资料的
     to_setup = [w for w in workers if not w.get("profile_set", False) and w.get("status") in ("imported", "active")]
-    
+
     if not to_setup:
-        return web.json_response({"message": "所有水军号资料已设置", "total": 0})
-    
+        return web.json_response({
+            "message": "所有水军号资料已设置",
+            "total": 0,
+            "success": True,
+            "success_count": 0,
+            "failed_count": 0
+        })
+
     results = []
-    
+
     for worker in to_setup:
         phone_clean = worker["phone"].replace("+", "").replace(" ", "")
         session_path = str(SESSIONS_DIR / phone_clean)
-        api_id = int(worker.get("api_id", "2040"))
+        try:
+            api_id = int(worker.get("api_id", "2040") or 2040)
+        except Exception:
+            api_id = 2040
         api_hash = worker.get("api_hash", "")
-        
-        # 获取代理
+
+        # 代理
         proxy = None
-        from app import proxy_pool
-        proxy_data = proxy_pool.get_proxy_for_worker(worker["id"])
-        if proxy_data:
-            try:
+        try:
+            from app import proxy_pool
+            proxy_data = proxy_pool.get_proxy_for_worker(worker["id"])
+            if proxy_data:
                 import python_socks
                 proxy = {
                     'proxy_type': python_socks.ProxyType.HTTP,
@@ -508,76 +532,80 @@ async def api_setup_profiles(request):
                 if proxy_data.get("username"):
                     proxy['username'] = proxy_data["username"]
                     proxy['password'] = proxy_data.get("password", "")
-            except:
-                pass
-        
+        except Exception:
+            pass
+
         try:
             client = TelegramClient(session_path, api_id, api_hash, proxy=proxy)
             await client.connect()
-            
+
             if not await client.is_user_authorized():
                 results.append({"phone": worker["phone"], "status": "未授权", "success": False})
                 await client.disconnect()
                 continue
-            
-            # 设置名字
-            display_name = worker.get("display_name", "")
-            if display_name and "-" in display_name:
-                first_name = display_name.split("-")[0]
-                last_name = display_name.split("-", 1)[1]
-            else:
-                first_name = display_name
-                last_name = ""
-            
+
+            # ========== 使用用户手动输入的资料 ==========
             await client(UpdateProfileRequest(
                 first_name=first_name,
                 last_name=last_name,
-                about=worker.get("target_bio", DEFAULT_BIO)
+                about=bio
             ))
-            
-            # 设置用户名
-            target_username = worker.get("target_username", "")
-            if target_username:
+
+            # 用户名：前缀 + 自动数字，冲突时自动换号
+            success_username = None
+            for retry in range(8):
+                num = get_next_username_number()
+                try_username = f"{username_prefix}{num}"
                 try:
-                    await client(UpdateUsernameRequest(username=target_username))
+                    await client(UpdateUsernameRequest(username=try_username))
+                    success_username = try_username
+                    break
                 except Exception as e:
-                    logger.warning(f"设置用户名失败 {worker['phone']}: {e}")
-                    # 用户名可能被占用，尝试下一个
-                    for retry in range(5):
-                        alt_num = get_next_username_number()
-                        alt_username = f"kuaiyue{alt_num}"
+                    logger.warning(f"用户名 {try_username} 不可用: {e}")
+                    continue
+
+            if not success_username:
+                results.append({"phone": worker["phone"], "status": "用户名全部冲突", "success": False})
+                await client.disconnect()
+                continue
+
+            # 头像
+            if use_random_avatar:
+                avatar_file = get_unused_avatar()
+                if avatar_file:
+                    avatar_path = AVATARS_DIR / avatar_file
+                    if avatar_path.exists():
                         try:
-                            await client(UpdateUsernameRequest(username=alt_username))
-                            worker["target_username"] = alt_username
-                            break
-                        except:
-                            continue
-            
-            # 设置头像
-            avatar_file = worker.get("avatar_file", "")
-            if avatar_file:
-                avatar_path = AVATARS_DIR / avatar_file
-                if avatar_path.exists():
-                    try:
-                        photo = await client.upload_file(avatar_path)
-                        await client(UploadProfilePhotoRequest(file=photo))
-                    except Exception as e:
-                        logger.warning(f"设置头像失败 {worker['phone']}: {e}")
-            
+                            photo = await client.upload_file(str(avatar_path))
+                            await client(UploadProfilePhotoRequest(file=photo))
+                            worker["avatar_file"] = avatar_file
+                        except Exception as e:
+                            logger.warning(f"设置头像失败 {worker['phone']}: {e}")
+
+            # 更新本地记录
+            worker["display_name"] = f"{first_name}-{last_name}" if last_name else first_name
+            worker["target_username"] = success_username
+            worker["target_bio"] = bio
             worker["profile_set"] = True
             worker["status"] = "active"
-            results.append({"phone": worker["phone"], "status": "成功", "success": True, "username": worker.get("target_username", "")})
-            
+
+            results.append({
+                "phone": worker["phone"],
+                "status": "成功",
+                "success": True,
+                "username": success_username
+            })
+
             await client.disconnect()
-            await asyncio.sleep(3)  # 避免频率限制
-            
+            await asyncio.sleep(3)  # 防限流
+
         except Exception as e:
-            results.append({"phone": worker["phone"], "status": f"失败: {str(e)[:50]}", "success": False})
-    
-    # 保存更新
+            results.append({"phone": worker["phone"], "status": f"失败: {str(e)[:60]}", "success": False})
+
+    # 保存
     workers_data["workers"] = workers
     save_json(workers_file, workers_data)
-    
+
     success_count = sum(1 for r in results if r["success"])
     return web.json_response({
         "success": True,

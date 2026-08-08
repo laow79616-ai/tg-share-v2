@@ -382,7 +382,6 @@
             <div class="flex-between mb-20">
                 <h2 style="color:#4fc3f7;">批量导入水军号</h2>
                 <div class="flex">
-                    <button class="btn btn-success" onclick="setupAllProfiles()">&#x1f527; 一键设置资料</button>
                     <button class="btn btn-primary" onclick="loadImportStatus()">&#x1f504; 刷新状态</button>
                 </div>
             </div>
@@ -392,6 +391,44 @@
                 <div class="stat-card"><div class="stat-value" id="stat-pending">0</div><div class="stat-label">待设置</div></div>
                 <div class="stat-card"><div class="stat-value" id="stat-active-imported">0</div><div class="stat-label">已激活</div></div>
             </div>
+
+            <!-- 手动设置资料表单 -->
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-title">&#x270f;&#xfe0f; 手动设置资料（应用到所有待设置水军号）</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:15px; margin-bottom:15px;">
+                    <div>
+                        <label style="display:block; color:#aaa; margin-bottom:5px; font-size:13px;">名字（必填）</label>
+                        <input type="text" id="profile-first-name" class="form-input" placeholder="例如：婉儿" value="婉儿" style="width:100%;">
+                    </div>
+                    <div>
+                        <label style="display:block; color:#aaa; margin-bottom:5px; font-size:13px;">姓氏 / 后缀（可选）</label>
+                        <input type="text" id="profile-last-name" class="form-input" placeholder="例如：快约到家欢迎您" value="快约到家欢迎您" style="width:100%;">
+                    </div>
+                </div>
+                <div style="margin-bottom:15px;">
+                    <label style="display:block; color:#aaa; margin-bottom:5px; font-size:13px;">用户名前缀（系统会自动加数字保证唯一）</label>
+                    <input type="text" id="profile-username-prefix" class="form-input" placeholder="例如：kuaiyue" value="kuaiyue" style="width:100%;">
+                </div>
+                <div style="margin-bottom:15px;">
+                    <label style="display:block; color:#aaa; margin-bottom:5px; font-size:13px;">简介（Bio）</label>
+                    <textarea id="profile-bio" class="form-input" rows="4" placeholder="输入简介内容" style="width:100%;">https://kuaiyue.vip
+https://t.me/kuaiyue9
+咨询热线：@kuaiyue123456789</textarea>
+                </div>
+                <div style="margin-bottom:20px;">
+                    <label style="display:flex; align-items:center; gap:8px; color:#ccc; cursor:pointer;">
+                        <input type="checkbox" id="profile-use-avatar" checked>
+                        <span>使用头像库随机头像（推荐）</span>
+                    </label>
+                </div>
+                <button class="btn btn-success" onclick="setupAllProfiles()" id="btn-setup-profiles">
+                    &#x1f680; 一键开始修改资料
+                </button>
+                <p style="color:#888; font-size:12px; margin-top:8px;">
+                    会把上面填写的资料应用到所有「待设置」的水军号，用户名会自动追加数字保证不冲突。
+                </p>
+            </div>
+
             <div class="card">
                 <div class="card-title">&#x1f4e6; 上传ZIP包（含 .session + .json 文件）</div>
                 <p style="color:#888;margin-bottom:10px;font-size:13px;">ZIP包内每个水军号需要两个文件：手机号.session 和 手机号.json（如 60163189524.session + 60163189524.json）</p>
@@ -515,25 +552,11 @@
 
         // Tab切换
         function switchTab(name) {
-            try {
-                document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-                document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
-                // Find the clicked tab by matching onclick content
-                var tabs = document.querySelectorAll('.tab');
-                for (var i = 0; i < tabs.length; i++) {
-                    var onclick = tabs[i].getAttribute('onclick') || '';
-                    if (onclick.indexOf(name) > -1) {
-                        tabs[i].classList.add('active');
-                        break;
-                    }
-                }
-                var panel = document.getElementById('panel-' + name);
-                if (panel) panel.classList.add('active');
-                loadTabData(name);
-            } catch(e) {
-                console.error('switchTab error:', e);
-                loadTabData(name);
-            }
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('panel-' + name).classList.add('active');
+            loadTabData(name);
         }
 
         function loadTabData(name) {
@@ -773,62 +796,40 @@
                 alert('❌ 请求失败: ' + e.message);
             }
         }
-        let targetsPage = 1;
-        const TARGETS_PER_PAGE = 50;
-        let allTargets = [];
         async function loadTargets() {
-            try {
-                var url = API + '/api/targets?page=' + targetsPage + '&per_page=' + TARGETS_PER_PAGE;
-                var r = await fetch(url);
-                if (r.status !== 200) { console.error('loadTargets: status', r.status); return; }
-                var data = await r.json();
-                var pageTargets = data.targets || [];
-                var total = data.total || 0;
-                var pending = data.pending || 0;
-                var sent = data.sent || 0;
-                var failed = data.failed || 0;
-                var filteredTotal = data.filtered_total || total;
-                document.getElementById('targets-total').textContent = total;
-                document.getElementById('targets-pending').textContent = pending;
-                document.getElementById('targets-sent').textContent = sent;
-                document.getElementById('targets-failed').textContent = failed;
-                var totalPages = Math.ceil(filteredTotal / TARGETS_PER_PAGE) || 1;
-                var html = pageTargets.map(function(t) {
-                    var statusClass = t.status === 'sent' ? 'badge-green' : (t.status === 'failed' ? 'badge-red' : 'badge-yellow');
-                    var bot = t.bot_username ? ('@' + t.bot_username) : '-';
-                    var sentAt = t.sent_at || '-';
-                    var result = t.result || '-';
-                    return '<tr>'
-                        + '<td>@' + t.username + '</td>'
-                        + '<td><span class="badge ' + statusClass + '">' + t.status + '</span></td>'
-                        + '<td class="text-gray">' + bot + '</td>'
-                        + '<td class="text-gray">' + sentAt + '</td>'
-                        + '<td class="text-gray">' + result + '</td>'
-                        + '<td><button class="btn btn-sm btn-danger" onclick="deleteTarget(\'' + t.username + '\')">\u5220\u9664</button></td>'
-                        + '</tr>';
-                }).join('');
-                document.getElementById('targets-list').innerHTML = html;
-                var pgHtml = '<div style="text-align:center;margin:15px 0;">';
-                pgHtml += '<button class="btn btn-sm" onclick="targetsPageGo(-1)" ' + (targetsPage <= 1 ? 'disabled' : '') + '>\u4e0a\u4e00\u9875</button>';
-                pgHtml += ' <span style="margin:0 10px;">\u7b2c ' + targetsPage + '/' + totalPages + ' \u9875 (\u5171' + filteredTotal + '\u6761)</span> ';
-                pgHtml += '<button class="btn btn-sm" onclick="targetsPageGo(1)" ' + (targetsPage >= totalPages ? 'disabled' : '') + '>\u4e0b\u4e00\u9875</button>';
-                pgHtml += '</div>';
-                var pgEl = document.getElementById('targets-pagination');
-                if (pgEl === null) {
-                    pgEl = document.createElement('div');
-                    pgEl.id = 'targets-pagination';
-                    document.getElementById('targets-list').parentElement.parentElement.appendChild(pgEl);
-                }
-                pgEl.innerHTML = pgHtml;
-            } catch(e) {
-                console.error('loadTargets exception:', e.message, e.stack);
-            }
-        }
-        function renderTargetsPage() { loadTargets(); }
-        function targetsPageGo(dir) {
-            targetsPage += dir;
-            if (targetsPage < 1) targetsPage = 1;
-            loadTargets();
+            const r = await fetch(API + '/api/targets');
+            const targets = await r.json();
+            // 按状态分组：sent在前，failed次之，pending最后；同组内按时间倒序
+            const statusOrder = {'sent': 0, 'failed': 1, 'pending': 2};
+            targets.sort((a, b) => {
+                const sa = statusOrder[a.status] ?? 2;
+                const sb = statusOrder[b.status] ?? 2;
+                if (sa !== sb) return sa - sb;
+                // 同状态按时间倒序
+                const ta = a.sent_at || '';
+                const tb = b.sent_at || '';
+                return tb.localeCompare(ta);
+            });
+            const html = targets.map(t => `
+                <tr>
+                    <td>@${t.username}</td>
+                    <td><span class="badge ${t.status === 'sent' ? 'badge-green' : t.status === 'failed' ? 'badge-red' : 'badge-yellow'}">${t.status}</span></td>
+                    <td class="text-gray">${t.bot_username ? '@' + t.bot_username : '-'}</td>
+                    <td class="text-gray">${t.sent_at || '-'}</td>
+                    <td class="text-gray">${t.result || '-'}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="deleteTarget('${t.username}')">删除</button></td>
+                </tr>
+            `).join('');
+            document.getElementById('targets-list').innerHTML = html;
+            // 更新统计
+            const total = targets.length;
+            const pending = targets.filter(t => t.status === 'pending').length;
+            const sent = targets.filter(t => t.status === 'sent').length;
+            const failed = targets.filter(t => t.status === 'failed').length;
+            document.getElementById('targets-total').textContent = total;
+            document.getElementById('targets-pending').textContent = pending;
+            document.getElementById('targets-sent').textContent = sent;
+            document.getElementById('targets-failed').textContent = failed;
         }
 
         async function addTargets() {
@@ -841,7 +842,6 @@
                 body: JSON.stringify({usernames})
             });
             document.getElementById('targets-input').value = '';
-            targetsPage = 1;
             loadTargets();
         }
 
@@ -1296,27 +1296,58 @@
         }
         
         async function setupAllProfiles() {
-            if (!confirm('确定要一键设置所有未设置资料的水军号？\n这将修改名字、用户名、简介和头像。\n过程可能需要几分钟。')) return;
-            
+            const firstName = document.getElementById('profile-first-name').value.trim();
+            const lastName = document.getElementById('profile-last-name').value.trim();
+            const usernamePrefix = document.getElementById('profile-username-prefix').value.trim();
+            const bio = document.getElementById('profile-bio').value.trim();
+            const useAvatar = document.getElementById('profile-use-avatar').checked;
+
+            if (!firstName) {
+                alert('请填写名字');
+                return;
+            }
+            if (!usernamePrefix) {
+                alert('请填写用户名前缀');
+                return;
+            }
+
+            if (!confirm(`确定要用以下资料批量修改所有待设置水军号吗？\n\n名字：${firstName}${lastName ? ' - ' + lastName : ''}\n用户名前缀：${usernamePrefix}\n使用随机头像：${useAvatar ? '是' : '否'}\n\n过程可能需要几分钟。`)) {
+                return;
+            }
+
+            const btn = document.getElementById('btn-setup-profiles');
+            btn.disabled = true;
+            btn.textContent = '⏳ 正在修改中...';
+
             try {
-                const btn = event.target;
-                btn.disabled = true;
-                btn.textContent = '⏳ 设置中...';
-                
-                const res = await fetch(API + '/api/workers/setup-profiles', {method: 'POST'});
+                const res = await fetch(API + '/api/workers/setup-profiles', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Auth-Token': localStorage.getItem('tg_auth_token') || ''
+                    },
+                    body: JSON.stringify({
+                        first_name: firstName,
+                        last_name: lastName,
+                        username_prefix: usernamePrefix,
+                        bio: bio,
+                        use_random_avatar: useAvatar
+                    })
+                });
+
                 const data = await res.json();
-                
+
                 if (data.success) {
                     alert(`资料设置完成！\n成功: ${data.success_count}\n失败: ${data.failed_count}`);
                     loadImportStatus();
                 } else {
                     alert('设置失败: ' + (data.error || data.message || '未知错误'));
                 }
-                
-                btn.disabled = false;
-                btn.textContent = '🔧 一键设置资料';
-            } catch(e) {
+            } catch (e) {
                 alert('请求失败: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🚀 一键开始修改资料';
             }
         }
         
