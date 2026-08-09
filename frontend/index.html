@@ -797,8 +797,21 @@ https://t.me/kuaiyue9
             }
         }
         async function loadTargets() {
-            const r = await fetch(API + '/api/targets');
-            const targets = await r.json();
+            const r = await fetch(API + '/api/targets', {
+                headers: {"X-Auth-Token": localStorage.getItem("tg_auth_token") || localStorage.getItem("token") || ""}
+            });
+            const raw = await r.json();
+            // 兼容两种返回格式：数组 或 {targets: [...]}
+            const targets = Array.isArray(raw) ? raw : (raw.targets || []);
+            if (!Array.isArray(targets)) {
+                console.error("targets 接口返回异常:", raw);
+                document.getElementById('targets-total').textContent = 0;
+                document.getElementById('targets-pending').textContent = 0;
+                document.getElementById('targets-sent').textContent = 0;
+                document.getElementById('targets-failed').textContent = 0;
+                document.getElementById('targets-list').innerHTML = '<tr><td colspan="6" style="text-align:center;color:#f44336;">加载失败，请重新登录后刷新</td></tr>';
+                return;
+            }
             // 按状态分组：sent在前，failed次之，pending最后；同组内按时间倒序
             const statusOrder = {'sent': 0, 'failed': 1, 'pending': 2};
             targets.sort((a, b) => {
