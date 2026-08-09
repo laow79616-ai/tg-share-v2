@@ -108,7 +108,7 @@ def log_activity(action, details="", worker_phone="", target="", status="info"):
         activity_log = activity_log[-MAX_ACTIVITY_LOG:]
 
 connected_count = 0
-MAX_CONCURRENT_CONNECTIONS = 20
+MAX_CONCURRENT_CONNECTIONS = 10
 CONNECTION_INTERVAL = 10  # 秒
 MEMORY_THRESHOLD = 80  # %
 
