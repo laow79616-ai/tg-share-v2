@@ -92,6 +92,23 @@ activity_log = []  # 最近50条活动记录
 current_activity = {}  # 当前正在进行的操作
 MAX_ACTIVITY_LOG = 50
 
+
+async def send_panel_notify(text: str):
+    """发送面板状态通知到指定Bot"""
+    try:
+        import aiohttp
+        token = "8693719995:AAGo3Ids3AiVZ7YRpClsrWN2xB8hEoquTxI"
+        chat_id = "8514546237"
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={"chat_id": chat_id, "text": text}) as resp:
+                if resp.status != 200:
+                    logger.warning(f"通知发送失败: HTTP {resp.status}")
+    except Exception as e:
+        logger.warning(f"通知发送异常: {e}")
+
+
+
 def log_activity(action, details="", worker_phone="", target="", status="info"):
     """记录工作流活动"""
     global activity_log
@@ -1204,6 +1221,10 @@ async def api_send_stop(request):
         except Exception:
             pass
     logger.info(f"[调度器停止] 已断开 {disconnected} 个水军连接")
+    try:
+        await send_panel_notify(f"旧面板发送已停止\n已断开水军: {disconnected}\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception:
+        pass
     return web.json_response({"ok": True, "message": f"发送任务已停止，已断开 {disconnected} 个水军连接"})
 
 
@@ -1599,6 +1620,14 @@ async def _run_send_scheduler_inner():
             await asyncio.sleep(5)
     current_activity = {"status": "已完成", "worker": "", "target": "", "step": f"共发送 {sent_count} 条"}
     log_activity("调度器完成", f"共发送 {sent_count} 条", status="info")
+    try:
+        await send_panel_notify(f"旧面板发送任务完成\n本次发送: {sent_count} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception:
+        pass
+    try:
+        await send_panel_notify(f"旧面板发送任务完成\n本次发送: {sent_count} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception:
+        pass
     logger.info(f"=== 发送调度器完成，共发送 {sent_count} 条 ===")
     # 调度器完成后断开所有水军连接
     disconnected = 0
