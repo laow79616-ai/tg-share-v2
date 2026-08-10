@@ -92,6 +92,53 @@ activity_log = []  # 最近50条活动记录
 current_activity = {}  # 当前正在进行的操作
 MAX_ACTIVITY_LOG = 50
 
+async def send_panel_notify(text: str):
+    """任何状态上报；失败写日志"""
+    logger.info(f"[通知] 准备发送: {str(text)[:80]}")
+    try:
+        import aiohttp, json as _json
+        from pathlib import Path as _P
+        cfg_path = _P(__file__).resolve().parent / "data" / "notify_config.json"
+        if not cfg_path.exists():
+            logger.warning("[通知] 缺少 data/notify_config.json")
+            return False
+        cfg = _json.loads(cfg_path.read_text(encoding="utf-8"))
+        token = (cfg.get("bot_token") or "").strip()
+        chat_id = str(cfg.get("chat_id") or "").strip()
+        if not token or not chat_id:
+            logger.warning("[通知] token 或 chat_id 为空")
+            return False
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": str(text)[:3500]},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    logger.warning(f"[通知] 失败 HTTP {resp.status}: {body[:200]}")
+                    return False
+                logger.info("[通知] 发送成功")
+                return True
+    except Exception as e:
+        logger.warning(f"[通知] 异常: {e}")
+        return False
+
+def _today_send_stats():
+    try:
+        stats = load_json(STATS_FILE) or {}
+        return {
+            "today": int(stats.get("today_sends") or stats.get("today") or 0),
+            "total": int(stats.get("total_sends") or stats.get("total") or 0),
+        }
+    except Exception:
+        return {"today": 0, "total": 0}
+
+
+
+
+
+
 
 async def send_panel_notify(text: str):
     """发送面板状态通知到指定Bot"""
@@ -1202,29 +1249,45 @@ async def api_send_start(request):
 
 @routes.post("/api/send/stop")
 async def api_send_stop(request):
-    """停止发送任务"""
+    """停止发送任务 — 任何情况都上报"""
     global scheduler_task, reconnect_task
-    if scheduler_task and not scheduler_task.done():
-        scheduler_task.cancel()
-        scheduler_task = None
-    # 停止重连任务
-    if reconnect_task and not reconnect_task.done():
-        reconnect_task.cancel()
-        reconnect_task = None
-    # 停止后断开所有水军连接（水军只在调度器运行时保持在线）
     disconnected = 0
-    for wid in list(workers.keys()):
-        try:
-            if workers[wid]._connected:
-                await workers[wid].disconnect()
-                disconnected += 1
-        except Exception:
-            pass
-    logger.info(f"[调度器停止] 已断开 {disconnected} 个水军连接")
     try:
-        await send_panel_notify(f"旧面板发送已停止\n已断开水军: {disconnected}\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    except Exception:
-        pass
+        if scheduler_task and not scheduler_task.done():
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except Exception:
+                pass
+        scheduler_task = None
+        if reconnect_task and not reconnect_task.done():
+            reconnect_task.cancel()
+            try:
+                await reconnect_task
+            except Exception:
+                pass
+        reconnect_task = None
+        for wid in list(workers.keys()):
+            try:
+                if getattr(workers[wid], "_connected", False):
+                    await workers[wid].disconnect()
+                    disconnected += 1
+            except Exception:
+                pass
+        logger.info(f"[调度器停止] 已断开 {disconnected} 个水军连接")
+    finally:
+        # 无论上面是否异常，都必须上报
+        try:
+            st = _today_send_stats()
+            await send_panel_notify(
+                f"【旧面板】发送已停止（手动）\n"
+                f"已断开水军: {disconnected}\n"
+                f"今日成功: {st['today']} 条\n"
+                f"累计成功: {st['total']} 条\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        except Exception as e:
+            logger.warning(f"停止通知 finally 失败: {e}")
     return web.json_response({"ok": True, "message": f"发送任务已停止，已断开 {disconnected} 个水军连接"})
 
 
@@ -1336,6 +1399,11 @@ async def _run_send_scheduler_inner():
 
     if not targets:
         logger.info("没有待发送的目标用户")
+        try:
+            st = _today_send_stats()
+            await send_panel_notify(f"【旧面板】发送停止\n原因: 没有待发送目标\n今日成功: {st['today']} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        except Exception:
+            pass
         return
 
     # 加载水军列表
@@ -1620,6 +1688,11 @@ async def _run_send_scheduler_inner():
             await asyncio.sleep(5)
     current_activity = {"status": "已完成", "worker": "", "target": "", "step": f"共发送 {sent_count} 条"}
     log_activity("调度器完成", f"共发送 {sent_count} 条", status="info")
+    try:
+        st = _today_send_stats()
+        await send_panel_notify(f"【旧面板】发送任务结束\n原因: 目标用完或达每日上限\n本轮: {sent_count} 条\n今日成功: {st['today']} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception:
+        pass
     try:
         await send_panel_notify(f"旧面板发送任务完成\n本次发送: {sent_count} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception:
