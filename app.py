@@ -1444,6 +1444,11 @@ async def _run_send_scheduler_inner():
                 if wid_try in workers:
                     if workers[wid_try].is_restricted:
                         continue
+                    # 多次 Flood 的号不再优先使用，避免空转降低成功率
+                    if getattr(workers[wid_try], "rate_limit_count", 0) >= 2:
+                        continue
+                    if getattr(workers[wid_try], "has_been_banned_24h", False):
+                        continue
                     if workers[wid_try].is_in_cooldown():
                         continue
                     if getattr(workers[wid_try], 'is_dead', False):
