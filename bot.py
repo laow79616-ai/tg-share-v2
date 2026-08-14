@@ -25,10 +25,13 @@ from telegram.ext import (
 
 logger = logging.getLogger("Bot")
 
-# 数据目录
-DATA_DIR = Path("/root/tg_share_v2/data")
-AD_CONFIG_FILE = DATA_DIR / "ad_config.json"
-BOT_CONFIG_FILE = DATA_DIR / "bot_config.json"
+# 数据目录（与 config.py 保持一致）
+try:
+    from config import DATA_DIR, AD_CONFIG_FILE, BOT_CONFIG_FILE
+except ImportError:
+    DATA_DIR = Path(os.environ.get("TG_SHARE_DATA_DIR", Path(__file__).resolve().parent / "data"))
+    AD_CONFIG_FILE = DATA_DIR / "ad_config.json"
+    BOT_CONFIG_FILE = DATA_DIR / "bot_config.json"
 
 
 def load_ads():

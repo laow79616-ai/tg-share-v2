@@ -14,6 +14,7 @@ tg_share_v2 主程序 - 优化版
 - 内存超80%自动清理
 """
 import os
+import signal
 import sys
 import json
 import time
@@ -48,7 +49,7 @@ from telethon.tl.types import (
 from worker import ShareWorker
 import auth
 from config import (
-    DATA_DIR, SESSIONS_DIR, LOGS_DIR,
+    BASE_DIR, DATA_DIR, SESSIONS_DIR, LOGS_DIR,
     load_json, save_json,
     AD_CONFIG_FILE, BOT_CONFIG_FILE, WORKERS_CONFIG_FILE,
 BOTS_FILE, TARGETS_FILE, PROXY_POOL_FILE, SCHEDULE_FILE, STATS_FILE
@@ -64,6 +65,12 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("App")
+
+# 降低 Telethon 日志级别，避免日志撑到数 GB
+logging.getLogger("telethon").setLevel(logging.WARNING)
+logging.getLogger("telethon.network").setLevel(logging.WARNING)
+logging.getLogger("telethon.network.mtprotosender").setLevel(logging.WARNING)
+
 
 # ============ 全局状态 ============
 workers = {}  # worker_id -> ShareWorker
@@ -86,11 +93,76 @@ def _persist_worker_rate_limit(worker_id, rate_limit_count, has_been_banned_24h,
 
 bot_app = None  # Telegram Bot Application
 scheduler_task = None
+# --- 2号面板：长时间无发送自动续跑 / 上报 ---
+PANEL_NAME = "2号面板"
+STALL_MINUTES = 15
+STALL_AFTER_RESTART_MINUTES = 10
+_stall_monitor_task = None
+_last_success_send_ts = 0.0
+_last_auto_restart_ts = 0.0
+_stall_alerted_after_restart = False
+
+_worker_low_notified_at = 0  # 水军不足上报时间戳，防刷
 reconnect_task = None  # 后台自动重连任务
 # 工作流活动日志
 activity_log = []  # 最近50条活动记录
 current_activity = {}  # 当前正在进行的操作
 MAX_ACTIVITY_LOG = 50
+
+async def check_workers_running_low(worker_configs, interval_min=120):
+    """可用水军是否会在约5小时内不够用；是则上报（5小时内最多一次）"""
+    global _worker_low_notified_at
+    import time as _time
+    now = _time.time()
+    if now - _worker_low_notified_at < 5 * 3600:
+        return
+    usable = 0
+    for wc in worker_configs:
+        wid = wc.get("id")
+        if wid in workers:
+            w = workers[wid]
+            if getattr(w, "is_restricted", False):
+                continue
+            if getattr(w, "is_dead", False):
+                continue
+            if getattr(w, "has_been_banned_24h", False):
+                continue
+            if getattr(w, "rate_limit_count", 0) >= 5:
+                continue
+            if w.is_in_cooldown():
+                continue
+        else:
+            # 未连接的配置号，若配置未标记限制也算潜在可用
+            if wc.get("is_restricted") or wc.get("has_been_banned_24h"):
+                continue
+            if int(wc.get("rate_limit_count") or 0) >= 5:
+                continue
+        usable += 1
+    # 5小时按当前间隔能发多少条
+    avg_interval = max(int(interval_min), 60)
+    need_for_5h = int((5 * 3600) / avg_interval)  # 约一条接一条
+    # 经验：健康号平均在再次限制前能撑的条数有限，按每号约8条保守估计
+    capacity = usable * 8
+    if False and (usable <= 15 or capacity < need_for_5h):
+        st = _today_send_stats() if "_today_send_stats" in globals() or True else {"today": 0, "total": 0}
+        try:
+            st = _today_send_stats()
+        except Exception:
+            st = {"today": 0, "total": 0}
+        msg = (
+            f"【旧面板】水军预计5小时内可能用完\\n"
+            f"当前可用水军约: {usable}\\n"
+            f"预估5小时需求约: {need_for_5h} 次发送\\n"
+            f"保守产能约: {capacity} 次\\n"
+            f"今日成功: {st.get('today', 0)} 条\\n"
+            f"请及时补仓水军\\n"
+            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        await send_panel_notify(msg)
+        _worker_low_notified_at = now
+        logger.warning(f"[预警] 水军不足已上报: usable={usable}, capacity={capacity}, need_5h={need_for_5h}")
+
+
 
 async def send_panel_notify(text: str):
     """任何状态上报；失败写日志"""
@@ -137,22 +209,6 @@ def _today_send_stats():
 
 
 
-
-
-
-async def send_panel_notify(text: str):
-    """发送面板状态通知到指定Bot"""
-    try:
-        import aiohttp
-        token = "8693719995:AAGo3Ids3AiVZ7YRpClsrWN2xB8hEoquTxI"
-        chat_id = "8514546237"
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json={"chat_id": chat_id, "text": text}) as resp:
-                if resp.status != 200:
-                    logger.warning(f"通知发送失败: HTTP {resp.status}")
-    except Exception as e:
-        logger.warning(f"通知发送异常: {e}")
 
 
 
@@ -425,7 +481,7 @@ from batch_import import register_batch_import_routes
 @routes.get("/")
 async def index(request):
     """前端页面"""
-    frontend_path = Path("/root/tg_share_v2/frontend/index.html")
+    frontend_path = BASE_DIR / "frontend" / "index.html"
     if frontend_path.exists():
         resp = web.FileResponse(frontend_path)
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -466,14 +522,18 @@ async def api_status(request):
     mem = psutil.virtual_memory()
     cpu = psutil.cpu_percent(interval=0.5)
     stats = load_json(STATS_FILE)
+    # 总数从配置文件读，在线数从内存连接状态读
+    cfg_workers = load_json(WORKERS_CONFIG_FILE).get("workers", [])
+    workers_total = len(cfg_workers)
+    workers_connected = sum(1 for w in workers.values() if getattr(w, "_connected", False))
     return web.json_response({
         "status": "running",
         "memory_percent": mem.percent,
         "memory_used_mb": round(mem.used / 1024 / 1024, 1),
         "memory_total_mb": round(mem.total / 1024 / 1024, 1),
         "cpu_percent": cpu,
-        "workers_total": len(workers),
-        "workers_connected": sum(1 for w in workers.values() if w._connected),
+        "workers_total": workers_total,
+        "workers_connected": workers_connected,
         "total_sends": stats.get("total_sends", 0),
         "today_sends": stats.get("today_sends", 0),
         "uptime": time.time() - stats.get("start_time", time.time())
@@ -583,7 +643,7 @@ async def api_worker_connect(request):
 
 @routes.post("/api/workers/connect-all")
 async def api_workers_connect_all(request):
-    """一键连接所有水军号"""
+    """一键连接所有水军号（受 MAX_CONCURRENT_CONNECTIONS 限制，防止内存爆死）"""
     data = load_json(WORKERS_CONFIG_FILE)
     worker_list = data.get("workers", [])
     bot_config = load_json(BOT_CONFIG_FILE)
@@ -591,20 +651,46 @@ async def api_workers_connect_all(request):
     api_hash = bot_config.get("api_hash")
     if not api_id or not api_hash:
         return web.json_response({"ok": False, "error": "请先配置API ID和API Hash"}, status=400)
-    
+
     results = []
     success_count = 0
     fail_count = 0
-    
+    skipped_count = 0
+
     for wconfig in worker_list:
         worker_id = wconfig["id"]
-        # 如果已经连接，跳过
         if worker_id in workers and workers[worker_id]._connected:
             results.append({"id": worker_id, "phone": wconfig["phone"], "status": "already_connected"})
             success_count += 1
             continue
-        
-        # 分配代理
+
+        connected_now = sum(1 for w in workers.values() if getattr(w, "_connected", False))
+        if connected_now >= MAX_CONCURRENT_CONNECTIONS:
+            results.append({
+                "id": worker_id,
+                "phone": wconfig["phone"],
+                "status": "skipped",
+                "error": f"已达最大并发连接数 {MAX_CONCURRENT_CONNECTIONS}，请先断开部分后再连接"
+            })
+            skipped_count += 1
+            continue
+
+        mem = psutil.virtual_memory()
+        if mem.percent > MEMORY_THRESHOLD:
+            logger.warning(f"[connect-all] 内存 {mem.percent}% 过高，清理空闲连接后继续")
+            await cleanup_connections()
+            await asyncio.sleep(5)
+            mem = psutil.virtual_memory()
+            if mem.percent > MEMORY_THRESHOLD:
+                results.append({
+                    "id": worker_id,
+                    "phone": wconfig["phone"],
+                    "status": "skipped",
+                    "error": f"内存使用过高({mem.percent}%)，已停止连接"
+                })
+                skipped_count += 1
+                continue
+
         proxy = proxy_pool.get_proxy_for_worker(worker_id)
         if proxy:
             wconfig["proxy"] = {
@@ -614,7 +700,7 @@ async def api_workers_connect_all(request):
                 "username": proxy.get("username", ""),
                 "password": proxy.get("password", "")
             }
-        
+
         worker = ShareWorker(wconfig, api_id, api_hash)
         worker._on_rate_limit_changed = _persist_worker_rate_limit
         worker._on_dead_detected = _on_dead_detected
@@ -624,18 +710,20 @@ async def api_workers_connect_all(request):
                 workers[worker_id] = worker
                 results.append({"id": worker_id, "phone": wconfig["phone"], "status": "connected"})
                 success_count += 1
+                await asyncio.sleep(CONNECTION_INTERVAL)
             else:
                 results.append({"id": worker_id, "phone": wconfig["phone"], "status": "failed", "error": worker.last_error})
                 fail_count += 1
         except Exception as e:
             results.append({"id": worker_id, "phone": wconfig["phone"], "status": "failed", "error": str(e)})
             fail_count += 1
-    
+
     return web.json_response({
         "ok": True,
-        "message": f"连接完成: {success_count}成功, {fail_count}失败",
+        "message": f"连接完成: {success_count}成功, {fail_count}失败, {skipped_count}跳过(达上限/内存保护)",
         "success_count": success_count,
         "fail_count": fail_count,
+        "skipped_count": skipped_count,
         "results": results
     })
 
@@ -896,7 +984,7 @@ async def api_proxies_auto_assign(request):
     data = load_json(WORKERS_CONFIG_FILE)
     worker_ids = [w["id"] for w in data.get("workers", [])]
     # 获取Bot列表
-    bots_data = load_json(BOTS_CONFIG_FILE)
+    bots_data = load_json(BOTS_FILE)
     bot_ids = [b.get("username", b.get("name", "")) for b in bots_data.get("bots", [])]
     result = proxy_pool.auto_assign(worker_ids, bot_ids, workers_per_proxy, bots_per_proxy)
     return web.json_response({"ok": True, **result})
@@ -934,7 +1022,7 @@ async def api_proxies_batch_import(request):
 # --- 系统设置 ---
 
 # === Bot管理 ===
-BOTS_CONFIG_FILE = DATA_DIR / "bots.json"
+# 统一使用 config.BOTS_FILE
 RESTRICTIONS_FILE = DATA_DIR / "restrictions.json"
 
 def load_restrictions():
@@ -1017,7 +1105,7 @@ def get_worker_restrictions(worker_phone):
 
 @routes.get("/api/bots")
 async def api_bots_list(request):
-    data = load_json(BOTS_CONFIG_FILE)
+    data = load_json(BOTS_FILE)
     bot_list = data.get("bots", [])
     bot_list.sort(key=lambda b: b.get("number", 0))
     # Bot状态只显示平台级别限制（inline disabled/restricted）
@@ -1033,7 +1121,7 @@ async def api_bots_list(request):
 async def api_bots_batch_import(request):
     body = await request.json()
     tokens_text = body.get("tokens", "")
-    data = load_json(BOTS_CONFIG_FILE)
+    data = load_json(BOTS_FILE)
     bot_list = data.get("bots", [])
     existing_tokens = {b["token"] for b in bot_list}
     added = 0
@@ -1064,13 +1152,13 @@ async def api_bots_batch_import(request):
         bot_list.append(new_bot)
         existing_tokens.add(token)
         added += 1
-    save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
+    save_json(BOTS_FILE, {"bots": bot_list})
     return web.json_response({"ok": True, "added": added, "total": len(bot_list), "errors": errors})
 
 @routes.post("/api/bots/{bot_id}/verify")
 async def api_bot_verify(request):
     bot_id = request.match_info["bot_id"]
-    data = load_json(BOTS_CONFIG_FILE)
+    data = load_json(BOTS_FILE)
     bot_list = data.get("bots", [])
     bot = next((b for b in bot_list if b["id"] == bot_id), None)
     if not bot:
@@ -1085,18 +1173,18 @@ async def api_bot_verify(request):
                     bot["username"] = bot_info.get("username", "")
                     bot["status"] = "active"
                     bot["enabled"] = True
-                    save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
+                    save_json(BOTS_FILE, {"bots": bot_list})
                     return web.json_response({"ok": True, "username": bot["username"]})
                 else:
                     bot["status"] = "invalid"
-                    save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
+                    save_json(BOTS_FILE, {"bots": bot_list})
                     return web.json_response({"ok": False, "error": result.get("description", "Token无效")})
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)})
 
 @routes.post("/api/bots/verify-all")
 async def api_bots_verify_all(request):
-    data = load_json(BOTS_CONFIG_FILE)
+    data = load_json(BOTS_FILE)
     bot_list = data.get("bots", [])
     import aiohttp
     results = {"active": 0, "invalid": 0, "error": 0}
@@ -1117,16 +1205,16 @@ async def api_bots_verify_all(request):
             except:
                 bot["status"] = "error"
                 results["error"] += 1
-    save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
+    save_json(BOTS_FILE, {"bots": bot_list})
     return web.json_response({"ok": True, "results": results})
 
 @routes.delete("/api/bots/{bot_id}")
 async def api_bot_delete(request):
     bot_id = request.match_info["bot_id"]
-    data = load_json(BOTS_CONFIG_FILE)
+    data = load_json(BOTS_FILE)
     bot_list = data.get("bots", [])
     bot_list = [b for b in bot_list if b["id"] != bot_id]
-    save_json(BOTS_CONFIG_FILE, {"bots": bot_list})
+    save_json(BOTS_FILE, {"bots": bot_list})
     return web.json_response({"ok": True})
 
 @routes.delete("/api/workers/{worker_id}")
@@ -1288,6 +1376,14 @@ async def api_send_stop(request):
             )
         except Exception as e:
             logger.warning(f"停止通知 finally 失败: {e}")
+    
+        try:
+            open("/tmp/tg_share_v2_sending.done", "w").write("manual_stop")
+            if os.path.exists("/tmp/tg_share_v2_sending"):
+                os.remove("/tmp/tg_share_v2_sending")
+        except Exception:
+            pass
+
     return web.json_response({"ok": True, "message": f"发送任务已停止，已断开 {disconnected} 个水军连接"})
 
 
@@ -1366,14 +1462,105 @@ async def _auto_reconnect_loop():
         if reconnected > 0:
             logger.info(f"[自动重连] 重连了 {reconnected} 个掉线水军")
 
+
+async def stall_send_monitor():
+    """2号面板：长时间无成功发送则自动重启；重启后仍无成功则上报"""
+    global scheduler_task, _last_auto_restart_ts, _stall_alerted_after_restart
+    global _last_success_send_ts
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await asyncio.sleep(60)
+            try:
+                targets_data = load_json(TARGETS_FILE)
+                pending = [t for t in targets_data.get("targets", []) if t.get("status") == "pending"]
+            except Exception:
+                pending = []
+            if not pending:
+                continue
+
+            now = time.time()
+            last_ok = _last_success_send_ts
+            running = scheduler_task is not None and not scheduler_task.done()
+
+            if not running:
+                logger.warning(f"[{PANEL_NAME}] 有待发目标但调度未运行，自动启动发送")
+                try:
+                    scheduler_task = asyncio.create_task(run_send_scheduler())
+                    _last_auto_restart_ts = now
+                    _stall_alerted_after_restart = False
+                    if last_ok <= 0:
+                        _last_success_send_ts = now
+                except Exception as e:
+                    logger.error(f"[{PANEL_NAME}] 自动启动失败: {e}")
+                continue
+
+            ref = last_ok if last_ok > 0 else (_last_auto_restart_ts or now)
+            idle_min = (now - ref) / 60.0
+
+            if idle_min >= STALL_MINUTES:
+                if not (_last_auto_restart_ts and (now - _last_auto_restart_ts) < STALL_MINUTES * 60):
+                    logger.warning(f"[{PANEL_NAME}] 已 {idle_min:.1f} 分钟无成功发送，自动重启调度")
+                    try:
+                        if scheduler_task and not scheduler_task.done():
+                            scheduler_task.cancel()
+                            try:
+                                await scheduler_task
+                            except Exception:
+                                pass
+                        scheduler_task = None
+                        await asyncio.sleep(2)
+                        scheduler_task = asyncio.create_task(run_send_scheduler())
+                        _last_auto_restart_ts = time.time()
+                        _stall_alerted_after_restart = False
+                    except Exception as e:
+                        logger.error(f"[{PANEL_NAME}] 自动重启调度失败: {e}")
+
+            if (
+                _last_auto_restart_ts > 0
+                and not _stall_alerted_after_restart
+                and (now - _last_auto_restart_ts) >= STALL_AFTER_RESTART_MINUTES * 60
+                and last_ok < _last_auto_restart_ts
+            ):
+                _stall_alerted_after_restart = True
+                try:
+                    st = _today_send_stats()
+                    msg = (
+                        f"【2号面板】长时间无发送告警\n"
+                        f"原因: 自动重启调度后 {STALL_AFTER_RESTART_MINUTES} 分钟仍无成功\n"
+                        f"待发目标: {len(pending)}\n"
+                        f"今日成功: {st.get('today', 0)} 条\n"
+                        f"累计成功: {st.get('total', 0)} 条\n"
+                        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    await send_panel_notify(msg)
+                    logger.warning(f"[{PANEL_NAME}] 已上报：重启后仍无成功")
+                except Exception as e:
+                    logger.error(f"[{PANEL_NAME}] 上报失败: {e}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[{PANEL_NAME}] stall_send_monitor 异常: {e}")
+            await asyncio.sleep(30)
+
+
+
 async def run_send_scheduler():
     """发送调度器 - 按需连接水军号，逐个发送（带异常保护）"""
     try:
         await _run_send_scheduler_inner()
     except Exception as e:
         logger.error(f"=== 发送调度器异常退出: {e} ===")
+        try:
+            open("/tmp/tg_share_v2_sending.done", "w").write("error:"+str(e))
+            if os.path.exists("/tmp/tg_share_v2_sending"):
+                os.remove("/tmp/tg_share_v2_sending")
+        except Exception:
+            pass
         import traceback
         logger.error(traceback.format_exc())
+
+
 
 async def _run_send_scheduler_inner():
     """发送调度器内部实现"""
@@ -1381,6 +1568,14 @@ async def _run_send_scheduler_inner():
     current_activity = {"status": "启动中", "worker": "", "target": "", "step": "初始化"}
     log_activity("调度器启动", "发送调度器开始运行", status="info")
     logger.info("=== 发送调度器启动 ===")
+    try:
+        open("/tmp/tg_share_v2_sending", "w").write("1")
+        if os.path.exists("/tmp/tg_share_v2_sending.done"):
+            os.remove("/tmp/tg_share_v2_sending.done")
+    except Exception:
+        pass
+
+
 
     config = load_json(BOT_CONFIG_FILE)
     api_id = config.get("api_id")
@@ -1445,7 +1640,7 @@ async def _run_send_scheduler_inner():
                     if workers[wid_try].is_restricted:
                         continue
                     # 多次 Flood 的号不再优先使用，避免空转降低成功率
-                    if getattr(workers[wid_try], "rate_limit_count", 0) >= 2:
+                    if getattr(workers[wid_try], "rate_limit_count", 0) >= 5:
                         continue
                     if getattr(workers[wid_try], "has_been_banned_24h", False):
                         continue
@@ -1468,7 +1663,7 @@ async def _run_send_scheduler_inner():
                     restrictions_data = load_restrictions()
                     banned_count = sum(1 for k, r in restrictions_data.get("records", {}).items() 
                                       if r.get("banned") and r.get("worker_phone") == worker_phone_check)
-                    bots_data_check = load_json(BOTS_CONFIG_FILE)
+                    bots_data_check = load_json(BOTS_FILE)
                     total_bots = len([b for b in bots_data_check.get("bots", []) if b.get("enabled", True)])
                     if total_bots > 0 and banned_count >= total_bots * 0.8:
                         continue
@@ -1538,7 +1733,24 @@ async def _run_send_scheduler_inner():
             await cleanup_connections()
             await asyncio.sleep(30)
 
+        try:
+            await check_workers_running_low(worker_configs, interval_min)
+        except Exception as _e:
+            logger.warning(f"水军不足检查失败: {_e}")
+        # 每目标最多 2 个水军尝试，失败则不再推送
+        target_try_count = 0
+        max_tries_per_target = 2
         # === Step 1: 先用一个水军号测试目标用户是否可达 ===
+        target_try_count += 1
+        if target_try_count > max_tries_per_target:
+            target["status"] = "failed"
+            target["sent_at"] = datetime.now().isoformat()
+            target["result"] = f"已尝试{max_tries_per_target}个水军均失败，停止推送该目标"
+            target["bot_username"] = ""
+            save_json(TARGETS_FILE, {"targets": targets_data["targets"]})
+            logger.info(f"[调度] 目标 @{target['username']} 已达{max_tries_per_target}次尝试上限，跳过")
+            await asyncio.sleep(1)
+            continue
         test_wconfig, test_worker = await get_available_worker()
         if not test_worker:
             logger.warning(f"[调度] 没有可用水军号，等待30秒...")
@@ -1586,7 +1798,7 @@ async def _run_send_scheduler_inner():
         logger.info(f"[调度] ✅ 目标 @{target['username']} 确认存在，开始发送...")
 
         # === Step 2: 目标可达，正式发送（最多尝试3个不同水军号）===
-        max_retry_workers = 3
+        max_retry_workers = 2  # TG34: 同一目标最多2个水军
         tried_worker_ids = set()
         tried_worker_ids.add(test_wconfig["id"])  # 测试用的水军号也可以用来发送
         tried_worker_ids.discard(test_wconfig["id"])  # 先不排除测试号，让它也参与发送
@@ -1678,6 +1890,9 @@ async def _run_send_scheduler_inner():
 
         if send_success:
             sent_count += 1
+            global _last_success_send_ts, _stall_alerted_after_restart
+            _last_success_send_ts = time.time()
+            _stall_alerted_after_restart = False
             stats["total_sends"] = stats.get("total_sends", 0) + 1
             stats["today_sends"] = stats.get("today_sends", 0) + 1
             save_json(STATS_FILE, stats)
@@ -1707,6 +1922,13 @@ async def _run_send_scheduler_inner():
     except Exception:
         pass
     logger.info(f"=== 发送调度器完成，共发送 {sent_count} 条 ===")
+    try:
+        open("/tmp/tg_share_v2_sending.done", "w").write("done:"+str(sent_count))
+        if os.path.exists("/tmp/tg_share_v2_sending"):
+            os.remove("/tmp/tg_share_v2_sending")
+    except Exception:
+        pass
+
     # 调度器完成后断开所有水军连接
     disconnected = 0
     for wid in list(workers.keys()):
@@ -1816,6 +2038,13 @@ async def on_startup(app):
     # except Exception as e:
     #     logger.error(f"Bot启动失败: {e}")
     logger.info("分享工作模式 - Bot polling 已禁用，由其他服务器处理")
+    register_exit_signals()
+
+    global _stall_monitor_task
+    if _stall_monitor_task is None or _stall_monitor_task.done():
+        _stall_monitor_task = asyncio.create_task(stall_send_monitor())
+        logger.info(f"[{PANEL_NAME}] 长时间无发送监控已启动 (stall={STALL_MINUTES}min, alert={STALL_AFTER_RESTART_MINUTES}min)")
+
 
 
 async def on_cleanup(app):
@@ -1834,6 +2063,74 @@ async def on_cleanup(app):
         pass
 
 
+
+# --- 2号面板：进程退出/重启时尽量上报（SIGTERM，pkill 默认）---
+_exit_notify_sent = False
+
+def _sync_panel_notify(text_msg: str):
+    """同步发通知（signal/退出路径不能依赖 running loop）"""
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        import urllib.request
+        cfg_path = _P(__file__).resolve().parent / "data" / "notify_config.json"
+        if not cfg_path.exists():
+            return False
+        cfg = _json.loads(cfg_path.read_text(encoding="utf-8"))
+        token = (cfg.get("bot_token") or "").strip()
+        chat_id = str(cfg.get("chat_id") or "").strip()
+        if not token or not chat_id:
+            return False
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = _json.dumps({"chat_id": chat_id, "text": str(text_msg)[:3500]}).encode()
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status == 200
+    except Exception as e:
+        try:
+            logger.warning(f"[通知] 退出上报失败: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def on_process_signal(signum, frame):
+    """SIGTERM/SIGINT：上报后退出（pkill 默认 SIGTERM）"""
+    global _exit_notify_sent
+    if _exit_notify_sent:
+        return
+    _exit_notify_sent = True
+    try:
+        name = globals().get("PANEL_NAME", "2号面板")
+    except Exception:
+        name = "2号面板"
+    sig_name = "SIGTERM" if signum == getattr(__import__("signal"), "SIGTERM", 15) else f"signal:{signum}"
+    msg = (
+        f"【{name}】进程退出上报\n"
+        f"原因: 收到 {sig_name}（服务重启/停止）\n"
+        f"时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    try:
+        logger.warning(f"[{name}] 收到 {sig_name}，准备退出并上报")
+    except Exception:
+        pass
+    _sync_panel_notify(msg)
+    import os as _os
+    _os._exit(0)
+
+
+def register_exit_signals():
+    try:
+        signal.signal(signal.SIGTERM, on_process_signal)
+        signal.signal(signal.SIGINT, on_process_signal)
+        logger.info(f"[{globals().get('PANEL_NAME', '2号面板')}] 已注册 SIGTERM/SIGINT 退出上报")
+    except Exception as e:
+        try:
+            logger.warning(f"注册退出信号失败: {e}")
+        except Exception:
+            pass
+
+
 def create_app():
     """创建Web应用"""
     app = web.Application(middlewares=[auth_middleware])
@@ -1843,10 +2140,10 @@ def create_app():
     app.add_routes(routes)
 
     # 静态文件
-    frontend_dir = Path("/root/tg_share_v2/frontend")
+    frontend_dir = BASE_DIR / "frontend"
     if frontend_dir.exists():
         app.router.add_static("/static/", frontend_dir, show_index=False)
-    avatars_dir = Path("/root/tg_share_v2/data/avatars")
+    avatars_dir = DATA_DIR / "avatars"
     if avatars_dir.exists():
         app.router.add_static("/static/avatars/", avatars_dir, show_index=False)
 

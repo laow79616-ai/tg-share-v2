@@ -34,3 +34,16 @@ data/notify_config.json
 data/restrictions.json
 data/stats.json
 *.bak*
+data/sessions/
+data/*.session
+data/notify_config.json
+data/bot_config.json
+data/workers_config.json
+data/targets.json
+data/stats.json
+data/proxy_pool.json
+logs/
+*.bak*
+__pycache__/
+*.pyc
+/tmp/

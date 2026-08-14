@@ -10,9 +10,9 @@ from pathlib import Path
 
 logger = logging.getLogger("Config")
 
-# 基础路径
-BASE_DIR = Path("/root/tg_share_v2")
-DATA_DIR = BASE_DIR / "data"
+# 基础路径（支持环境变量覆盖）
+BASE_DIR = Path(os.environ.get("TG_SHARE_BASE_DIR", "/root/tg_share_v2"))
+DATA_DIR = Path(os.environ.get("TG_SHARE_DATA_DIR", str(BASE_DIR / "data")))
 SESSIONS_DIR = DATA_DIR / "sessions"
 LOGS_DIR = BASE_DIR / "logs"
 
