@@ -93,8 +93,15 @@ def _persist_worker_rate_limit(worker_id, rate_limit_count, has_been_banned_24h,
 
 bot_app = None  # Telegram Bot Application
 scheduler_task = None
+<<<<<<< HEAD
 # --- 2号面板：长时间无发送自动续跑 / 上报 ---
 PANEL_NAME = "2号面板"
+=======
+# --- 1号面板：长时间无发送自动续跑 / 上报 ---
+PANEL_NAME = "1号面板"
+_STALL_MONITOR_STARTED = False
+_EXIT_SIGNALS_REGISTERED = False
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
 STALL_MINUTES = 15
 STALL_AFTER_RESTART_MINUTES = 10
 _stall_monitor_task = None
@@ -150,7 +157,11 @@ async def check_workers_running_low(worker_configs, interval_min=120):
         except Exception:
             st = {"today": 0, "total": 0}
         msg = (
+<<<<<<< HEAD
             f"【旧面板】水军预计5小时内可能用完\\n"
+=======
+            f"【1号面板】水军预计5小时内可能用完\\n"
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
             f"当前可用水军约: {usable}\\n"
             f"预估5小时需求约: {need_for_5h} 次发送\\n"
             f"保守产能约: {capacity} 次\\n"
@@ -949,8 +960,26 @@ async def api_targets_delete(request):
 # --- IP代理池管理 ---
 @routes.get("/api/proxies")
 async def api_proxies_list(request):
-    return web.json_response(proxy_pool.get_all())
-
+    """代理列表，附带已分配水军手机号"""
+    data = load_json(PROXY_POOL_FILE)
+    proxies = data.get("proxies", [])
+    workers = load_json(WORKERS_CONFIG_FILE).get("workers", [])
+    id2w = {w.get("id"): w for w in workers}
+    out = []
+    for p in proxies:
+        item = dict(p)
+        assigned = []
+        for wid in (p.get("assigned_bots") or []):
+            w = id2w.get(wid) or {}
+            assigned.append({
+                "id": wid,
+                "phone": w.get("phone") or "",
+                "status": w.get("status") or "",
+            })
+        item["assigned_workers"] = assigned
+        item["assigned_worker_phones"] = [x["phone"] for x in assigned if x.get("phone")]
+        out.append(item)
+    return web.json_response({"ok": True, "proxies": out})
 
 @routes.post("/api/proxies")
 async def api_proxies_add(request):
@@ -989,6 +1018,49 @@ async def api_proxies_auto_assign(request):
     result = proxy_pool.auto_assign(worker_ids, bot_ids, workers_per_proxy, bots_per_proxy)
     return web.json_response({"ok": True, **result})
 
+
+
+@routes.post("/api/proxies/{proxy_id}/assign-workers")
+async def api_proxies_assign_workers(request):
+    """把水军号绑到指定代理（用该IP自己的 host/port）"""
+    proxy_id = request.match_info["proxy_id"]
+    body = await request.json()
+    phones = body.get("phones") or body.get("usernames") or []
+    phones = [str(x).strip().replace(" ", "") for x in phones if str(x).strip()]
+    pdata = load_json(PROXY_POOL_FILE)
+    proxies = pdata.get("proxies", [])
+    proxy = next((p for p in proxies if p.get("id") == proxy_id), None)
+    if not proxy:
+        return web.json_response({"ok": False, "error": "代理不存在"}, status=404)
+    wdata = load_json(WORKERS_CONFIG_FILE)
+    workers = wdata.get("workers", [])
+    phone2w = {(w.get("phone") or "").replace(" ", ""): w for w in workers}
+    assigned = list(proxy.get("assigned_bots") or [])
+    added = []
+    missing = []
+    for ph in phones:
+        w = phone2w.get(ph) or phone2w.get("+" + ph.lstrip("+"))
+        if not w:
+            # 兼容不带+
+            w = next((x for x in workers if (x.get("phone") or "").replace("+","") == ph.replace("+","")), None)
+        if not w:
+            missing.append(ph)
+            continue
+        wid = w.get("id")
+        if wid not in assigned:
+            assigned.append(wid)
+        w["proxy"] = {
+            "host": proxy.get("host"),
+            "port": proxy.get("port"),
+            "type": proxy.get("type") or "http",
+            "username": proxy.get("username") or "",
+            "password": proxy.get("password") or "",
+        }
+        added.append(w.get("phone"))
+    proxy["assigned_bots"] = assigned
+    save_json(PROXY_POOL_FILE, {"proxies": proxies})
+    save_json(WORKERS_CONFIG_FILE, {"workers": workers})
+    return web.json_response({"ok": True, "added": added, "missing": missing, "count": len(assigned)})
 
 @routes.post("/api/proxies/batch")
 async def api_proxies_batch_import(request):
@@ -1368,7 +1440,11 @@ async def api_send_stop(request):
         try:
             st = _today_send_stats()
             await send_panel_notify(
+<<<<<<< HEAD
                 f"【旧面板】发送已停止（手动）\n"
+=======
+                f"【1号面板】发送已停止（手动）\n"
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
                 f"已断开水军: {disconnected}\n"
                 f"今日成功: {st['today']} 条\n"
                 f"累计成功: {st['total']} 条\n"
@@ -1464,7 +1540,11 @@ async def _auto_reconnect_loop():
 
 
 async def stall_send_monitor():
+<<<<<<< HEAD
     """2号面板：长时间无成功发送则自动重启；重启后仍无成功则上报"""
+=======
+    """1号面板：长时间无成功发送则自动重启；重启后仍无成功则上报"""
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
     global scheduler_task, _last_auto_restart_ts, _stall_alerted_after_restart
     global _last_success_send_ts
     await asyncio.sleep(60)
@@ -1526,7 +1606,11 @@ async def stall_send_monitor():
                 try:
                     st = _today_send_stats()
                     msg = (
+<<<<<<< HEAD
                         f"【2号面板】长时间无发送告警\n"
+=======
+                        f"【1号面板】长时间无发送告警\n"
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
                         f"原因: 自动重启调度后 {STALL_AFTER_RESTART_MINUTES} 分钟仍无成功\n"
                         f"待发目标: {len(pending)}\n"
                         f"今日成功: {st.get('today', 0)} 条\n"
@@ -1596,7 +1680,11 @@ async def _run_send_scheduler_inner():
         logger.info("没有待发送的目标用户")
         try:
             st = _today_send_stats()
+<<<<<<< HEAD
             await send_panel_notify(f"【旧面板】发送停止\n原因: 没有待发送目标\n今日成功: {st['today']} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+=======
+            await send_panel_notify(f"【1号面板】发送停止\n原因: 没有待发送目标\n今日成功: {st['today']} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
         except Exception:
             pass
         return
@@ -1910,6 +1998,7 @@ async def _run_send_scheduler_inner():
     log_activity("调度器完成", f"共发送 {sent_count} 条", status="info")
     try:
         st = _today_send_stats()
+<<<<<<< HEAD
         await send_panel_notify(f"【旧面板】发送任务结束\n原因: 目标用完或达每日上限\n本轮: {sent_count} 条\n今日成功: {st['today']} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception:
         pass
@@ -1919,6 +2008,17 @@ async def _run_send_scheduler_inner():
         pass
     try:
         await send_panel_notify(f"旧面板发送任务完成\n本次发送: {sent_count} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+=======
+        await send_panel_notify(f"【1号面板】发送任务结束\n原因: 目标用完或达每日上限\n本轮: {sent_count} 条\n今日成功: {st['today']} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception:
+        pass
+    try:
+        await send_panel_notify(f"1号面板发送任务完成\n本次发送: {sent_count} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception:
+        pass
+    try:
+        await send_panel_notify(f"1号面板发送任务完成\n本次发送: {sent_count} 条\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
     except Exception:
         pass
     logger.info(f"=== 发送调度器完成，共发送 {sent_count} 条 ===")
@@ -2042,8 +2142,15 @@ async def on_startup(app):
 
     global _stall_monitor_task
     if _stall_monitor_task is None or _stall_monitor_task.done():
+<<<<<<< HEAD
         _stall_monitor_task = asyncio.create_task(stall_send_monitor())
         logger.info(f"[{PANEL_NAME}] 长时间无发送监控已启动 (stall={STALL_MINUTES}min, alert={STALL_AFTER_RESTART_MINUTES}min)")
+=======
+        if not globals().get("_STALL_MONITOR_STARTED"):
+            globals()["_stall_monitor_task"] = asyncio.create_task(stall_send_monitor())
+            globals()["_STALL_MONITOR_STARTED"] = True
+            logger.info(f"[{PANEL_NAME}] 长时间无发送监控已启动 (stall 仅一次)")
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
 
 
 
@@ -2064,7 +2171,11 @@ async def on_cleanup(app):
 
 
 
+<<<<<<< HEAD
 # --- 2号面板：进程退出/重启时尽量上报（SIGTERM，pkill 默认）---
+=======
+# --- 1号面板：进程退出/重启时尽量上报（SIGTERM，pkill 默认）---
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
 _exit_notify_sent = False
 
 def _sync_panel_notify(text_msg: str):
@@ -2101,9 +2212,15 @@ def on_process_signal(signum, frame):
         return
     _exit_notify_sent = True
     try:
+<<<<<<< HEAD
         name = globals().get("PANEL_NAME", "2号面板")
     except Exception:
         name = "2号面板"
+=======
+        name = globals().get("PANEL_NAME", "1号面板")
+    except Exception:
+        name = "1号面板"
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
     sig_name = "SIGTERM" if signum == getattr(__import__("signal"), "SIGTERM", 15) else f"signal:{signum}"
     msg = (
         f"【{name}】进程退出上报\n"
@@ -2120,10 +2237,21 @@ def on_process_signal(signum, frame):
 
 
 def register_exit_signals():
+<<<<<<< HEAD
     try:
         signal.signal(signal.SIGTERM, on_process_signal)
         signal.signal(signal.SIGINT, on_process_signal)
         logger.info(f"[{globals().get('PANEL_NAME', '2号面板')}] 已注册 SIGTERM/SIGINT 退出上报")
+=======
+    global _EXIT_SIGNALS_REGISTERED
+    if globals().get("_EXIT_SIGNALS_REGISTERED"):
+        return
+    try:
+        signal.signal(signal.SIGTERM, on_process_signal)
+        signal.signal(signal.SIGINT, on_process_signal)
+        globals()['_EXIT_SIGNALS_REGISTERED'] = True
+        logger.info(f"[{globals().get('PANEL_NAME', '1号面板')}] 已注册 SIGTERM/SIGINT 退出上报")
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
     except Exception as e:
         try:
             logger.warning(f"注册退出信号失败: {e}")

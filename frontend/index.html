@@ -250,6 +250,7 @@
                 <div class="section-title">IP代理池</div>
                 <div class="flex">
                     <button class="btn btn-warning" onclick="autoAssignProxies()">🔄 一键均匀分配（水军+Bot）</button>
+                    <button class="btn btn-primary" onclick="exportAllProxyWorkers()">⬇️ 一键全部导出</button>
                     <button class="btn btn-success" onclick="showBatchProxy()">📋 批量导入</button>
                     <button class="btn btn-primary" onclick="showAddProxy()">+ 添加代理</button>
                 </div>
@@ -307,7 +308,7 @@
                 </div>
             </div>
             <table>
-                <thead><tr><th>ID</th><th>类型</th><th>地址</th><th>分配水军</th><th>分配Bot</th><th>状态</th><th>操作</th></tr></thead>
+                <thead><tr><th>ID</th><th>类型</th><th>地址/端口</th><th>水军号</th><th>分配Bot</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody id="proxies-list"></tbody>
             </table>
         </div>
@@ -797,6 +798,7 @@ https://t.me/kuaiyue9
             }
         }
         async function loadTargets() {
+<<<<<<< HEAD
             const r = await fetch(API + '/api/targets', {
                 headers: {"X-Auth-Token": localStorage.getItem("tg_auth_token") || localStorage.getItem("token") || ""}
             });
@@ -812,6 +814,11 @@ https://t.me/kuaiyue9
                 document.getElementById('targets-list').innerHTML = '<tr><td colspan="6" style="text-align:center;color:#f44336;">加载失败，请重新登录后刷新</td></tr>';
                 return;
             }
+=======
+            const r = await fetch(API + '/api/targets');
+            const data = await r.json();
+        const targets = Array.isArray(data) ? data : (data.targets || []);
+>>>>>>> 3fafbe2 (IP代理池：展示水军号、单条/全部导出、按IP绑定水军)
             // 按状态分组：sent在前，failed次之，pending最后；同组内按时间倒序
             const statusOrder = {'sent': 0, 'failed': 1, 'pending': 2};
             targets.sort((a, b) => {
@@ -926,21 +933,93 @@ https://t.me/kuaiyue9
         function hideAddProxy() { document.getElementById('add-proxy-form').style.display = 'none'; }
 
         async function loadProxies() {
-            const r = await fetch(API + '/api/proxies');
-            const proxies = await r.json();
-            const html = proxies.map(p => `
+            const r = await fetch(API + '/api/proxies', {headers: {"X-Auth-Token": localStorage.getItem("token") || ""}});
+            const data = await r.json();
+            const list = Array.isArray(data) ? data : (data.proxies || []);
+            window._proxyList = list;
+            const html = list.map(p => {
+                const phones = p.assigned_worker_phones || (p.assigned_workers || []).map(x => x.phone).filter(Boolean);
+                const addr = (p.host || '') + ':' + (p.port || '');
+                const phoneHtml = phones.length
+                    ? phones.map(ph => `<div class="proxy-phone">${ph}</div>`).join('')
+                    : '<span style="opacity:.5">未分配</span>';
+                return `
                 <tr>
-                    <td>${p.id}</td>
-                    <td><span class="badge badge-blue">${p.type}</span></td>
-                    <td>${p.host}:${p.port}</td>
-                    <td><span class="badge badge-green">${(p.assigned_bots || []).length} 个</span></td>
-                    <td><span class="badge badge-blue">${(p.assigned_bot_accounts || []).length} 个</span></td>
-                    <td><span class="badge ${p.status === 'active' ? 'badge-green' : 'badge-red'}">${p.status}</span></td>
-                    <td><button class="btn btn-sm btn-danger" onclick="deleteProxy('${p.id}')">删除</button></td>
-                </tr>
-            `).join('');
+                    <td>${p.id || ''}</td>
+                    <td><span class="badge">${p.type || 'http'}</span></td>
+                    <td>
+                        <div><b>${addr}</b></div>
+                        <div style="opacity:.7;font-size:12px">端口 ${p.port || '-'}</div>
+                    </td>
+                    <td style="text-align:left;min-width:220px">
+                        <div><span class="badge badge-green">${phones.length} 个</span></div>
+                        <div style="max-height:140px;overflow:auto;margin:6px 0">${phoneHtml}</div>
+                        <textarea id="addw-${p.id}" rows="2" placeholder="在此IP下添加水军号，每行一个" style="width:100%;background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:6px;padding:6px"></textarea>
+                        <button class="btn btn-primary" style="margin-top:4px" onclick="addWorkersToProxy('${p.id}')">添加到此IP</button>
+                    </td>
+                    <td><span class="badge">${(p.assigned_bot_accounts || []).length} 个</span></td>
+                    <td><span class="badge badge-green">${p.status || ''}</span></td>
+                    <td>
+                        <button class="btn btn-primary" onclick="exportProxyWorkers('${p.id}')">导出水军+地址</button>
+                        <button class="btn btn-danger" onclick="deleteProxy('${p.id}')">删除</button>
+                    </td>
+                </tr>`;
+            }).join('');
             document.getElementById('proxies-list').innerHTML = html;
         }
+
+
+
+        function formatProxyExport(p) {
+            const addr = (p.host || '') + ':' + (p.port || '');
+            const phones = p.assigned_worker_phones || (p.assigned_workers || []).map(x => x.phone).filter(Boolean);
+            const phoneLine = '水军号' + (phones.length ? phones.join('|') : '');
+            return '# IP地址: ' + addr + '\n' + phoneLine;
+        }
+
+        function downloadText(filename, text) {
+            const blob = new Blob([text], {type: 'text/plain;charset=utf-8'});
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        function exportProxyWorkers(proxyId) {
+            const list = window._proxyList || [];
+            const p = list.find(x => x.id === proxyId);
+            if (!p) { alert('找不到该代理'); return; }
+            const addr = (p.host || '') + '_' + (p.port || '');
+            downloadText('proxy_' + addr + '_workers.txt', formatProxyExport(p));
+        }
+
+        function exportAllProxyWorkers() {
+            const list = window._proxyList || [];
+            if (!list.length) { alert('没有代理数据，请先刷新'); return; }
+            const text = list.map(formatProxyExport).join('\n\n');
+            downloadText('all_proxies_workers.txt', text);
+        }
+
+        async function addWorkersToProxy(proxyId) {
+            const el = document.getElementById('addw-' + proxyId);
+            const raw = (el && el.value || '').trim();
+            if (!raw) { alert('请输入水军号，每行一个'); return; }
+            const phones = raw.split(/[\\n,，\\s]+/).map(s => s.trim()).filter(Boolean);
+            const r = await fetch(API + '/api/proxies/' + proxyId + '/assign-workers', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Auth-Token': localStorage.getItem('token') || ''
+                },
+                body: JSON.stringify({phones})
+            });
+            const d = await r.json();
+            if (!d.ok) { alert(d.error || '添加失败'); return; }
+            alert('已绑定 ' + (d.added || []).length + ' 个\\n未找到: ' + ((d.missing||[]).join(', ') || '无'));
+            loadProxies();
+        }
+
 
         async function addProxy() {
             const type = document.getElementById('proxy-type').value;
