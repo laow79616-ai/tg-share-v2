@@ -351,6 +351,30 @@ class ShareWorker:
                 with open(bots_file, 'r') as bf:
                     bots_data = json.load(bf)
                 all_bots = [b.get("username", "").lstrip("@") for b in bots_data.get("bots", []) if b.get("enabled", True) and not b.get("is_restricted", False) and b.get("username")]
+                group_bots = None
+                _pp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "proxy_pool.json")
+                if not _os.path.exists(_pp):
+                    _pp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "proxy_pool.json")
+                if _os.path.exists(_pp):
+                    _pdata = json.load(open(_pp, "r"))
+                    _proxies = _pdata.get("proxies", _pdata if isinstance(_pdata, list) else [])
+                    my_host = ((self.config or {}).get("proxy") or {}).get("host")
+                    my_port = str(((self.config or {}).get("proxy") or {}).get("port") or "")
+                    for _px in _proxies:
+                        if str(_px.get("host")) == str(my_host) and str(_px.get("port")) == my_port:
+                            acc = _px.get("assigned_bot_accounts") or []
+                            names = []
+                            for item in acc:
+                                if isinstance(item, dict):
+                                    names.append(str(item.get("username") or item.get("id") or "").lstrip("@"))
+                                else:
+                                    names.append(str(item).lstrip("@"))
+                            names = [x for x in names if x]
+                            if names:
+                                group_bots = [x for x in all_bots if x in names] or names
+                            break
+                if group_bots:
+                    all_bots = group_bots
             except Exception as e:
                 logger.warning(f"[Worker-{self.worker_id}] 加载Bot池失败: {e}")
                 all_bots = []

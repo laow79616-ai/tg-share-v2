@@ -47,3 +47,11 @@ logs/
 __pycache__/
 *.pyc
 /tmp/
+*.session
+*.session-journal
+data/restrictions.json
+data/*.bak
+__pycache__/
+*.pyc
+agent.log
+/tmp/

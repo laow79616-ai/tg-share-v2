@@ -27,6 +27,274 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import deque
 
+
+# API_GROUP_ASSIGN_V1
+def _api_cfg_path():
+    from pathlib import Path as _P
+    cand = [
+        _P("/root/tg_share_v2/data/api_configs.json"),
+        _P("/root/tg_share_v2/api_configs.json"),
+    ]
+    try:
+        from config import DATA_DIR
+        cand.insert(0, DATA_DIR / "api_configs.json")
+    except Exception:
+        pass
+    for x in cand:
+        if x.exists():
+            return x
+    return cand[0]
+
+def _load_api_cfgs():
+    path = _api_cfg_path()
+    if not path.exists():
+        return []
+    raw = load_json(path)
+    if isinstance(raw, list):
+        return raw
+    return raw.get("configs") or raw.get("pool") or []
+
+def _save_api_cfgs(arr):
+    save_json(_api_cfg_path(), {"configs": arr})
+
+def _load_proxies_list():
+    pdata = load_json(PROXY_POOL_FILE)
+    if isinstance(pdata, list):
+        return pdata, None
+    return pdata.get("proxies") or [], pdata
+
+def _save_proxies_list(proxies, raw):
+    if raw is None:
+        save_json(PROXY_POOL_FILE, proxies)
+    else:
+        raw["proxies"] = proxies
+        save_json(PROXY_POOL_FILE, raw)
+
+def _assigned_api_ids(proxies):
+    s = set()
+    for px in proxies:
+        a = px.get("assigned_api") or {}
+        if a.get("api_id"):
+            s.add(str(a.get("api_id")))
+    return s
+
+def api_auto_assign_by_group():
+    """前 20 条 IP 各配 1 条 API，剩余进待配池（不写 assigned_api）。"""
+    cfgs = _load_api_cfgs()
+    proxies, raw = _load_proxies_list()
+    used = set()
+    assigned = 0
+    idx = 0
+    for i, px in enumerate(proxies[:20]):
+        cur = px.get("assigned_api") or {}
+        if cur.get("api_id") and any(str(x.get("api_id")) == str(cur.get("api_id")) for x in cfgs):
+            used.add(str(cur.get("api_id")))
+            assigned += 1
+            continue
+        while idx < len(cfgs) and str(cfgs[idx].get("api_id")) in used:
+            idx += 1
+        if idx >= len(cfgs):
+            px["assigned_api"] = None
+            continue
+        item = cfgs[idx]
+        px["assigned_api"] = {
+            "api_id": item.get("api_id"),
+            "api_hash": item.get("api_hash"),
+            "id": item.get("id"),
+            "note": item.get("note") or f"线路{i+1}",
+        }
+        used.add(str(item.get("api_id")))
+        assigned += 1
+        idx += 1
+    _save_proxies_list(proxies, raw)
+    standby = [x for x in cfgs if str(x.get("api_id")) not in used]
+    return {"ok": True, "assigned": assigned, "standby": len(standby), "message": f"已按组分配 {assigned} 条，待配池 {len(standby)} 条"}
+
+def api_replace_group(group_index):
+    """该组 API 有问题：从待配池任意抽 1 条换上，旧的回待配池。"""
+    cfgs = _load_api_cfgs()
+    proxies, raw = _load_proxies_list()
+    if group_index < 0 or group_index >= len(proxies):
+        return {"ok": False, "error": "组不存在"}
+    used = _assigned_api_ids(proxies)
+    old = (proxies[group_index].get("assigned_api") or {}).get("api_id")
+    if old:
+        used.discard(str(old))
+    standby = [x for x in cfgs if str(x.get("api_id")) not in used]
+    if not standby:
+        return {"ok": False, "error": "待配池为空"}
+    pick = random.choice(standby)
+    proxies[group_index]["assigned_api"] = {
+        "api_id": pick.get("api_id"),
+        "api_hash": pick.get("api_hash"),
+        "id": pick.get("id"),
+        "note": pick.get("note") or "",
+    }
+    _save_proxies_list(proxies, raw)
+    return {"ok": True, "message": f"线路{group_index+1} 已换 API {pick.get('api_id')}"}
+
+
+
+def resolve_api_for_worker(wc, config):
+    """优先：水军所在 IP 组的 assigned_api；没有则待配池随机 1 条；再没有才用系统默认。"""
+    try:
+        proxies, _raw = _load_proxies_list()
+        wid = str((wc or {}).get("id") or "")
+        phone = str((wc or {}).get("phone") or "")
+        px = None
+        for item in proxies:
+            ids = [str(x) for x in (item.get("assigned_bots") or [])]
+            phones = [str(x) for x in (item.get("assigned_worker_phones") or [])]
+            if wid in ids or phone in phones:
+                px = item
+                break
+        if px and (px.get("assigned_api") or {}).get("api_id"):
+            aa = px["assigned_api"]
+            return aa.get("api_id"), aa.get("api_hash")
+        used = _assigned_api_ids(proxies)
+        standby = [x for x in _load_api_cfgs() if str(x.get("api_id")) not in used]
+        if standby:
+            pick = random.choice(standby)
+            return pick.get("api_id"), pick.get("api_hash")
+    except Exception:
+        pass
+    return config.get("api_id"), config.get("api_hash")
+
+
+# GROUP_RUNTIME_V2
+_group_rr_index = 0
+
+def _load_api_list():
+    from pathlib import Path as _P
+    import json as _json
+    for path in (_P("/root/tg_share_v2/data/api_configs.json"), _P("/root/tg_share_v2/api_configs.json")):
+        if path.exists():
+            raw = _json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, list) else (raw.get("configs") or raw.get("pool") or []), path, raw
+    return [], _P("/root/tg_share_v2/data/api_configs.json"), {"configs": []}
+
+def _save_api_list(arr, path, raw):
+    import json as _json
+    if isinstance(raw, list):
+        path.write_text(_json.dumps(arr, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        raw["configs"] = arr
+        path.write_text(_json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _load_px():
+    pdata = load_json(PROXY_POOL_FILE)
+    if isinstance(pdata, list):
+        return pdata, None
+    return pdata.get("proxies") or [], pdata
+
+def _save_px(proxies, raw):
+    if raw is None:
+        save_json(PROXY_POOL_FILE, proxies)
+    else:
+        raw["proxies"] = proxies
+        save_json(PROXY_POOL_FILE, raw)
+
+def resolve_api_for_group(group_index, config=None):
+    """只用该组已配 API。没有才回退系统默认。不在这里动待配池。"""
+    config = config or {}
+    apis, _path, _raw = _load_api_list()
+    for a in apis:
+        if a.get("group") == group_index:
+            return a.get("api_id"), a.get("api_hash"), "group"
+    proxies, _ = _load_px()
+    if 0 <= group_index < len(proxies):
+        aa = (proxies[group_index].get("assigned_api") or {})
+        if aa.get("api_id"):
+            return aa.get("api_id"), aa.get("api_hash"), "proxy"
+    return config.get("api_id"), config.get("api_hash"), "global_fallback"
+
+def replace_group_api_from_standby(group_index, reason="api_invalid"):
+    """仅 API 失效/发码失败时调用。号限流禁止走这里。"""
+    apis, path, raw = _load_api_list()
+    standby = [a for a in apis if a.get("group") == "standby"]
+    if not standby:
+        return False, "待配池为空"
+    pick = standby[0]
+    old = None
+    for a in apis:
+        if a.get("group") == group_index:
+            old = a
+            a["group"] = "standby"
+            a["status"] = "failed"
+            a["fail_reason"] = reason
+    pick["group"] = group_index
+    pick["status"] = "assigned"
+    _save_api_list(apis, path, raw)
+    proxies, praw = _load_px()
+    if 0 <= group_index < len(proxies):
+        proxies[group_index]["assigned_api"] = {
+            "api_id": pick.get("api_id"),
+            "api_hash": pick.get("api_hash"),
+            "id": pick.get("id"),
+            "note": pick.get("note") or "",
+        }
+        _save_px(proxies, praw)
+    return True, f"组{group_index+1} API已从待配池替换为 {pick.get('api_id')} (old={None if not old else old.get('api_id')})"
+
+def is_api_failure(err):
+    s = str(err or "")
+    keys = ("ApiIdInvalid", "api_id/api_hash", "API_ID_INVALID", "api_hash combination is invalid", "SendCodeRequest")
+    return any(k.lower() in s.lower() for k in keys)
+
+def is_flood_err(err):
+    s = str(err or "")
+    return "FloodWait" in s or "FLOOD" in s or "flood" in s.lower()
+
+def pick_worker_group_rr(worker_configs, live_workers, skip_ids=None):
+    """
+    1-20 组轮询。
+    当前组若有空闲可用号，只抽 1 个；该组某号在冷却，不影响同组其它空闲号。
+    整组都不可用才切下一组。
+    """
+    global _group_rr_index
+    skip_ids = skip_ids or set()
+    n = 20
+    cfg_by = {str(w.get("id")): w for w in worker_configs}
+
+    def usable(wc):
+        wid = str(wc.get("id"))
+        if wid in skip_ids:
+            return False
+        w = live_workers.get(wid)
+        if w is None:
+            return True
+        if getattr(w, "is_restricted", False) or getattr(w, "is_dead", False):
+            return False
+        if hasattr(w, "is_in_cooldown") and w.is_in_cooldown():
+            return False
+        if getattr(w, "rate_limit_count", 0) >= 5:
+            return False
+        return True
+
+    by_group = {i: [] for i in range(n)}
+    for wc in worker_configs:
+        g = wc.get("group")
+        if not isinstance(g, int):
+            # 用已绑定 proxy 推断组
+            host = ((wc.get("proxy") or {}).get("host"))
+            proxies, _ = _load_px()
+            g = 0
+            for i, px in enumerate(proxies[:20]):
+                if px.get("host") == host or str(wc.get("id")) in [str(x) for x in (px.get("assigned_bots") or [])]:
+                    g = i
+                    break
+        if isinstance(g, int) and 0 <= g < 20:
+            by_group[g].append(wc)
+
+    for step in range(n):
+        gi = (_group_rr_index + step) % n
+        cands = [wc for wc in by_group.get(gi, []) if usable(wc)]
+        if not cands:
+            continue
+        _group_rr_index = (gi + 1) % n
+        return cands[0], gi
+    return None, None
+
 from aiohttp import web
 import aiohttp_cors
 
@@ -233,6 +501,176 @@ connected_count = 0
 MAX_CONCURRENT_CONNECTIONS = 10
 CONNECTION_INTERVAL = 10  # 秒
 MEMORY_THRESHOLD = 80  # %
+
+
+# ============ IP线路固定绑定 / 轮询调度 ============
+IP_LINE_MAX_WORKERS = 10
+GROUP_PER_IP = 10
+MAX_IP_GROUPS = 20
+IP_LINE_MAX_LINES = 20
+_ip_line_cursor = 0
+
+
+def _norm_phone(ph):
+    return str(ph or "").replace(" ", "").replace("+", "").strip()
+
+
+def _proxy_tuple_from_obj(proxy):
+    if not proxy:
+        return None
+    return {
+        "id": proxy.get("id"),
+        "host": proxy.get("host"),
+        "port": proxy.get("port"),
+        "type": proxy.get("type") or "http",
+        "username": proxy.get("username") or "",
+        "password": proxy.get("password") or "",
+    }
+
+
+def _find_proxy(proxies, proxy_id=None, host=None, port=None):
+    if proxy_id:
+        for p in proxies:
+            if p.get("id") == proxy_id:
+                return p
+    if host is not None and port is not None:
+        for p in proxies:
+            if str(p.get("host")) == str(host) and int(p.get("port") or 0) == int(port):
+                return p
+    return None
+
+
+def _worker_bound_proxy_id(w, proxies):
+    pid = w.get("proxy_id") or w.get("bound_proxy_id")
+    if pid:
+        return pid
+    px = w.get("proxy") or {}
+    p = _find_proxy(proxies, host=px.get("host"), port=px.get("port"))
+    return p.get("id") if p else None
+
+
+def _active_ip_lines(proxies):
+    lines = [p for p in proxies if p.get("status", "active") != "disabled"]
+    return lines[:IP_LINE_MAX_LINES]
+
+
+def bind_worker_to_proxy_locked(worker, proxy, proxies, workers, *, allow_rebind=False):
+    """把水军锁到指定IP。已绑其他IP则拒绝。每条最多10个。"""
+    if not proxy:
+        return False, "IP线路不存在"
+    pid = proxy.get("id")
+    assigned = list(proxy.get("assigned_bots") or [])
+    wid = worker.get("id")
+    cur = _worker_bound_proxy_id(worker, proxies)
+    if cur and cur != pid and not allow_rebind:
+        return False, "该水军已绑定其他IP线路，禁止串换"
+    if wid not in assigned and len(assigned) >= IP_LINE_MAX_WORKERS:
+        return False, f"该IP线路已满（最多{IP_LINE_MAX_WORKERS}个水军）"
+    if wid not in assigned:
+        assigned.append(wid)
+    proxy["assigned_bots"] = assigned
+    worker["proxy_id"] = pid
+    worker["bound_proxy_id"] = pid
+    worker["proxy"] = _proxy_tuple_from_obj(proxy)
+    # 从其他IP的名单里摘掉（防历史脏数据）
+    for p in proxies:
+        if p.get("id") != pid:
+            p["assigned_bots"] = [x for x in (p.get("assigned_bots") or []) if x != wid]
+    return True, "ok"
+
+
+def worker_in_cooldown(w):
+    until = float(w.get("cooldown_until") or 0)
+    return until > time.time()
+
+
+def mark_worker_cooldown(w, seconds=900, reason="flood"):
+    w["cooldown_until"] = time.time() + int(seconds)
+    w["cooldown_reason"] = reason
+    w["status"] = "cooling"
+    w["pool"] = "cooldown"
+    # 归属IP不变
+    return w
+
+
+def clear_worker_cooldown_if_ready(w):
+    if not worker_in_cooldown(w):
+        if w.get("pool") == "cooldown" or w.get("status") == "cooling":
+            w["pool"] = "ip_line"
+            if w.get("status") == "cooling":
+                w["status"] = "idle"
+            w["cooldown_until"] = 0
+        return True
+    return False
+
+
+def pick_one_idle_worker_on_ip(proxy, workers, workers_runtime=None):
+    """当前IP只挑1个可工作号。冷却中的跳过，冷却结束仍只在本IP里复活。"""
+    ids = list(proxy.get("assigned_bots") or [])
+    by_id = {w.get("id"): w for w in workers}
+    for wid in ids:
+        w = by_id.get(wid)
+        if not w:
+            continue
+        clear_worker_cooldown_if_ready(w)
+        if worker_in_cooldown(w):
+            continue
+        if w.get("status") in ("banned", "deleted", "pending_login"):
+            continue
+        rt = None
+        if workers_runtime is not None:
+            rt = workers_runtime.get(wid)
+        if rt is not None and not getattr(rt, "_connected", False):
+            continue
+        return w
+    return None
+
+
+
+def attach_group_fields(proxy_list, worker_list=None, bot_list=None):
+    """给 IP/水军/Bot 打组号：第 N 条 IP = 组N，每组最多10号。"""
+    for i, p in enumerate(proxy_list[:20]):
+        p["group_no"] = i + 1
+        p["group_name"] = f"组{i+1}"
+    for p in proxy_list[20:]:
+        p["group_no"] = 0
+        p["group_name"] = "未编组"
+    pmap = {p.get("id"): p for p in proxy_list}
+    if worker_list:
+        for w in worker_list:
+            pid = w.get("bound_proxy_id") or w.get("proxy_id") or ""
+            g = (pmap.get(pid) or {}).get("group_no") or 0
+            w["group_no"] = g
+            w["group_name"] = f"组{g}" if g else "未编组"
+    if bot_list:
+        name_g = {}
+        for p in proxy_list:
+            g = p.get("group_no") or 0
+            for n in (p.get("assigned_bot_accounts") or []) + (p.get("assigned_bots") or []):
+                name_g[str(n).lower()] = g
+        for b in bot_list:
+            key = str(b.get("username") or b.get("bot_username") or b.get("name") or "").lower()
+            g = name_g.get(key) or 0
+            b["group_no"] = g
+            b["group_name"] = f"组{g}" if g else "未编组"
+    return proxy_list
+
+def pick_next_ip_worker(workers_cfg, runtime_workers):
+    """按IP线路轮询：当前线路只取1个空闲号，然后切下一条。"""
+    global _ip_line_cursor
+    pdata = load_json(PROXY_POOL_FILE)
+    proxies = _active_ip_lines(pdata.get("proxies", []))
+    if not proxies:
+        return None, None
+    n = len(proxies)
+    for step in range(n):
+        idx = (_ip_line_cursor + step) % n
+        proxy = proxies[idx]
+        w = pick_one_idle_worker_on_ip(proxy, workers_cfg, runtime_workers)
+        if w:
+            _ip_line_cursor = (idx + 1) % n
+            return w, proxy
+    return None, None
 
 # ============ IP 代理池管理 ============
 class ProxyPool:
@@ -517,6 +955,87 @@ async def api_login(request):
         return web.json_response({"ok": True, "token": auth.create_token(username)})
     return web.json_response({"ok": False, "error": "用户名或密码错误"}, status=401)
 
+
+
+@routes.get("/api/group_notes")
+async def api_group_notes_get(request):
+    path = DATA_DIR / "group_notes.json"
+    if not path.exists():
+        return web.json_response({"notes": {}})
+    try:
+        return web.json_response({"notes": json.loads(path.read_text(encoding="utf-8"))})
+    except Exception:
+        return web.json_response({"notes": {}})
+
+@routes.post("/api/group_notes")
+async def api_group_notes_save(request):
+    body = await request.json()
+    no = str(body.get("group_no") or "")
+    note = str(body.get("note") or "").strip()[:80]
+    path = DATA_DIR / "group_notes.json"
+    notes = {}
+    if path.exists():
+        try:
+            notes = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            notes = {}
+    if no:
+        notes[no] = note
+        path.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+    return web.json_response({"ok": True, "notes": notes})
+
+
+@routes.post("/api/bots/regroup")
+async def api_bots_regroup(request):
+    body = await request.json()
+    want = int(body.get("group_no") or 0)
+    data = load_json(BOTS_FILE) if "BOTS_FILE" in globals() else None
+    path = None
+    for cand in ["BOTS_FILE", "BOT_FILE"]:
+        if cand in globals():
+            path = globals()[cand]
+            break
+    from pathlib import Path as P
+    if path is None:
+        path = DATA_DIR / "bots.json"
+    try:
+        data = load_json(path)
+    except Exception:
+        import json
+        data = json.loads(Path(path).read_text() or "{}")
+    bots = data.get("bots") or data if isinstance(data, list) else data.get("bots") or []
+    # 重新按每组10个填，或把未分组/最后导入的填到指定组
+    if want and 1 <= want <= 20:
+        # 指定组现有数量
+        cur = [b for b in bots if int(b.get("group_no") or 0)==want]
+        room = max(0, 10-len(cur))
+        for b in bots:
+            g=int(b.get("group_no") or 0)
+            if g==0 and room>0:
+                b["group_no"]=want
+                b["group_name"]=f"组{want}"
+                room -= 1
+    else:
+        # 自动补齐
+        buckets={i:0 for i in range(1,21)}
+        for b in bots:
+            g=int(b.get("group_no") or 0)
+            if 1<=g<=20: buckets[g]+=1
+        for b in bots:
+            g=int(b.get("group_no") or 0)
+            if g: continue
+            for i in range(1,21):
+                if buckets[i]<10:
+                    b["group_no"]=i
+                    b["group_name"]=f"组{i}"
+                    buckets[i]+=1
+                    break
+    if isinstance(data, dict):
+        data["bots"]=bots
+        save_json(path, data)
+    else:
+        save_json(path, {"bots": bots})
+    return web.json_response({"ok": True, "count": len(bots)})
 
 @routes.get("/api/status")
 async def api_status(request):
@@ -1013,10 +1532,10 @@ async def api_proxies_auto_assign(request):
 
 @routes.post("/api/proxies/{proxy_id}/assign-workers")
 async def api_proxies_assign_workers(request):
-    """把水军号绑到指定代理（用该IP自己的 host/port）"""
+    """绑定水军到指定IP：每条最多10个，已绑其他IP禁止串换。"""
     proxy_id = request.match_info["proxy_id"]
     body = await request.json()
-    phones = body.get("phones") or body.get("usernames") or []
+    phones = body.get("phones") or []
     phones = [str(x).strip().replace(" ", "") for x in phones if str(x).strip()]
     pdata = load_json(PROXY_POOL_FILE)
     proxies = pdata.get("proxies", [])
@@ -1025,33 +1544,29 @@ async def api_proxies_assign_workers(request):
         return web.json_response({"ok": False, "error": "代理不存在"}, status=404)
     wdata = load_json(WORKERS_CONFIG_FILE)
     workers = wdata.get("workers", [])
-    phone2w = {(w.get("phone") or "").replace(" ", ""): w for w in workers}
-    assigned = list(proxy.get("assigned_bots") or [])
-    added = []
-    missing = []
+    added, missing, rejected = [], [], []
     for ph in phones:
-        w = phone2w.get(ph) or phone2w.get("+" + ph.lstrip("+"))
-        if not w:
-            # 兼容不带+
-            w = next((x for x in workers if (x.get("phone") or "").replace("+","") == ph.replace("+","")), None)
+        w = next((x for x in workers if _norm_phone(x.get("phone")) == _norm_phone(ph)), None)
         if not w:
             missing.append(ph)
             continue
-        wid = w.get("id")
-        if wid not in assigned:
-            assigned.append(wid)
-        w["proxy"] = {
-            "host": proxy.get("host"),
-            "port": proxy.get("port"),
-            "type": proxy.get("type") or "http",
-            "username": proxy.get("username") or "",
-            "password": proxy.get("password") or "",
-        }
-        added.append(w.get("phone"))
-    proxy["assigned_bots"] = assigned
+        ok, msg = bind_worker_to_proxy_locked(w, proxy, proxies, workers, allow_rebind=False)
+        if ok:
+            w["pool"] = "ip_line"
+            added.append(w.get("phone"))
+        else:
+            rejected.append({"phone": ph, "error": msg})
     save_json(PROXY_POOL_FILE, {"proxies": proxies})
     save_json(WORKERS_CONFIG_FILE, {"workers": workers})
-    return web.json_response({"ok": True, "added": added, "missing": missing, "count": len(assigned)})
+    return web.json_response({
+        "ok": True,
+        "added": added,
+        "missing": missing,
+        "rejected": rejected,
+        "count": len(proxy.get("assigned_bots") or []),
+        "cap": IP_LINE_MAX_WORKERS,
+    })
+
 
 @routes.post("/api/proxies/batch")
 async def api_proxies_batch_import(request):
@@ -1511,6 +2026,10 @@ async def _auto_reconnect_loop():
                     "username": proxy.get("username", ""),
                     "password": proxy.get("password", "")
                 }
+            _gi = int(wc.get('group') or 0)
+            _aid, _ah, _asrc = resolve_api_for_group(_gi, {'api_id': api_id, 'api_hash': api_hash})
+            if _aid and _ah:
+                api_id, api_hash = _aid, _ah
             w = ShareWorker(wc, api_id, api_hash)
             w._on_rate_limit_changed = _persist_worker_rate_limit
             w._on_dead_detected = _on_dead_detected
@@ -1625,6 +2144,56 @@ async def run_send_scheduler():
 
 
 
+
+# GROUP_RR_V1
+_group_rr_index = 0
+
+def _proxy_groups_ordered():
+    try:
+        pdata = proxy_pool.proxies if hasattr(proxy_pool, "proxies") else []
+    except Exception:
+        pdata = []
+    return list(pdata)[:20]
+
+def _worker_ids_of_proxy(px):
+    ids = [str(x) for x in (px.get("assigned_bots") or [])]
+    return ids
+
+async def pick_worker_by_group_rr(worker_configs, workers, skip_ids=None):
+    """1-20 组轮询：当前组只抽 1 个空闲号，用完切下一组。"""
+    global _group_rr_index
+    if skip_ids is None:
+        skip_ids = set()
+    groups = _proxy_groups_ordered()
+    if not groups:
+        return None, None
+    cfg_by_id = {str(wc.get("id")): wc for wc in worker_configs}
+    n = len(groups)
+    for step in range(n):
+        gi = (_group_rr_index + step) % n
+        px = groups[gi]
+        cands = []
+        for wid in _worker_ids_of_proxy(px):
+            if wid in skip_ids:
+                continue
+            wc = cfg_by_id.get(wid)
+            if not wc:
+                continue
+            if wid in workers:
+                w = workers[wid]
+                if getattr(w, "is_restricted", False) or (hasattr(w, "is_in_cooldown") and w.is_in_cooldown()) or getattr(w, "is_dead", False):
+                    continue
+                if getattr(w, "rate_limit_count", 0) >= 5:
+                    continue
+            cands.append(wc)
+        if not cands:
+            continue
+        wc = cands[0]
+        _group_rr_index = (gi + 1) % n
+        wc["_group_proxy"] = px
+        return wc, px
+    return None, None
+
 async def _run_send_scheduler_inner():
     """发送调度器内部实现"""
     global current_activity
@@ -1686,84 +2255,56 @@ async def _run_send_scheduler_inner():
 
         # === 辅助函数: 获取可用水军号 ===
         async def get_available_worker(skip_ids=None):
-            """获取一个可用的水军号，跳过指定ID列表"""
-            nonlocal worker_idx
+            """按组抽 1 个空闲号；同组其它号冷却不影响。"""
             if skip_ids is None:
                 skip_ids = set()
-            tried = 0
-            while tried < len(worker_configs):
-                wc = worker_configs[worker_idx % len(worker_configs)]
-                worker_idx += 1
-                tried += 1
-                wid_try = wc["id"]
-                if wid_try in skip_ids:
-                    continue
-                # 跳过被限制或冷却中的
-                if wid_try in workers:
-                    if workers[wid_try].is_restricted:
-                        continue
-                    # 多次 Flood 的号不再优先使用，避免空转降低成功率
-                    if getattr(workers[wid_try], "rate_limit_count", 0) >= 5:
-                        continue
-                    if getattr(workers[wid_try], "has_been_banned_24h", False):
-                        continue
-                    if workers[wid_try].is_in_cooldown():
-                        continue
-                    if getattr(workers[wid_try], 'is_dead', False):
-                        continue
-                    if getattr(workers[wid_try], 'needs_disconnect', False):
-                        # 如果水军号被限制达到10次，自动删除
-                        if getattr(workers[wid_try], 'is_dead', False):
-                            auto_delete_dead_worker(workers[wid_try].phone)
-                            del workers[wid_try]
-                        else:
-                            await release_banned_worker(wid_try)
-                            workers[wid_try].needs_disconnect = False
-                        continue
-                # 跳过banned组合过多的水军号（全局Bot池模式：超过80%的Bot被banned才跳过）
-                worker_phone_check = wc.get("phone", "")
-                if worker_phone_check:
-                    restrictions_data = load_restrictions()
-                    banned_count = sum(1 for k, r in restrictions_data.get("records", {}).items() 
-                                      if r.get("banned") and r.get("worker_phone") == worker_phone_check)
-                    bots_data_check = load_json(BOTS_FILE)
-                    total_bots = len([b for b in bots_data_check.get("bots", []) if b.get("enabled", True)])
-                    if total_bots > 0 and banned_count >= total_bots * 0.8:
-                        continue
-                # 按需连接
-                if wid_try not in workers or not workers[wid_try]._connected:
-                    connected_count = sum(1 for w in workers.values() if w._connected)
-                    if connected_count >= MAX_CONCURRENT_CONNECTIONS:
-                        await disconnect_oldest_worker()
-                    proxy = proxy_pool.get_proxy_for_worker(wid_try)
-                    if proxy:
-                        wc["proxy"] = {
-                            "type": proxy["type"],
-                            "host": proxy["host"],
-                            "port": proxy["port"],
-                            "username": proxy.get("username", ""),
-                            "password": proxy.get("password", "")
-                        }
-                    w = ShareWorker(wc, api_id, api_hash)
-                    w._on_rate_limit_changed = _persist_worker_rate_limit
-                    w._on_dead_detected = _on_dead_detected
-                    try:
-                        ok = await w.connect()
-                    except Exception:
-                        continue
-                    if not ok:
-                        continue
-                    workers[wid_try] = w
-                    await asyncio.sleep(CONNECTION_INTERVAL)
+            if len(skip_ids) >= max(1, len(worker_configs)):
+                return None, None
+            wc, gi = pick_worker_group_rr(worker_configs, workers, skip_ids)
+            if wc is None:
+                return None, None
+            wid_try = wc["id"]
+            _aid, _ah, _src = resolve_api_for_group(int(gi or 0), {"api_id": api_id, "api_hash": api_hash})
+            use_id = _aid or api_id
+            use_hash = _ah or api_hash
+            if wid_try in workers:
                 w = workers[wid_try]
+                if w.is_restricted or w.is_in_cooldown() or getattr(w, "is_dead", False) or getattr(w, "rate_limit_count", 0) >= 5:
+                    skip_ids.add(wid_try)
+                    return await get_available_worker(skip_ids)
+            if wid_try not in workers or not getattr(workers.get(wid_try), "_connected", False):
+                connected_n = sum(1 for x in workers.values() if getattr(x, "_connected", False))
+                if connected_n >= MAX_CONCURRENT_CONNECTIONS:
+                    await disconnect_oldest_worker()
                 try:
-                    if not await w.ensure_connected():
-                        continue
+                    proxy = proxy_pool.get_proxy_for_worker(wid_try)
                 except Exception:
-                    w._connected = False
-                    continue
-                return wc, w
-            return None, None
+                    proxy = wc.get("proxy")
+                if isinstance(proxy, dict) and proxy.get("host"):
+                    wc["proxy"] = proxy
+                w = ShareWorker(wc, use_id, use_hash)
+                try:
+                    w._on_rate_limit_changed = _persist_worker_rate_limit
+                except Exception:
+                    pass
+                ok = await w.connect()
+                if not ok:
+                    skip_ids.add(wid_try)
+                    err = getattr(w, "last_error", "") or ""
+                    if is_api_failure(err):
+                        replace_group_api_from_standby(int(gi or 0), reason=str(err)[:120])
+                    return await get_available_worker(skip_ids)
+                workers[wid_try] = w
+                await asyncio.sleep(CONNECTION_INTERVAL)
+            w = workers[wid_try]
+            try:
+                if not await w.ensure_connected():
+                    skip_ids.add(wid_try)
+                    return await get_available_worker(skip_ids)
+            except Exception:
+                skip_ids.add(wid_try)
+                return await get_available_worker(skip_ids)
+            return wc, w
 
         # === 检查是否所有水军号都不可用 ===
         all_unavailable = True
@@ -2029,7 +2570,20 @@ async def release_banned_worker(wid):
 
 async def disconnect_oldest_worker():
     """断开最久未使用的worker"""
-    idle_workers = [(wid, w) for wid, w in workers.items() if w._connected and w.status == "idle"]
+    _cfg_workers = load_json(WORKERS_CONFIG_FILE).get("workers", [])
+    wconfig_send, _cur_ip = pick_next_ip_worker(_cfg_workers, workers)
+    idle_workers = []
+    if wconfig_send:
+        wid = wconfig_send.get("id")
+        worker = workers.get(wid)
+        if worker is None:
+            for _k, _w in workers.items():
+                if getattr(_w, "phone", "") == wconfig_send.get("phone"):
+                    wid, worker = _k, _w
+                    break
+        if worker is not None and getattr(worker, "_connected", False):
+            idle_workers = [(wid, worker)]
+            logger.info(f"[调度] IP线路 {_cur_ip.get('host')}:{_cur_ip.get('port')} 选用 {wconfig_send.get('phone')}")
     if idle_workers:
         wid, worker = idle_workers[0]
         await worker.disconnect()
@@ -2237,3 +2791,58 @@ def create_app():
 if __name__ == "__main__":
     app = create_app()
     web.run_app(app, host="0.0.0.0", port=8000)
+
+
+@routes.get("/api/api-configs")
+async def api_api_configs_get(request):
+    return web.json_response({"configs": _load_api_cfgs()})
+
+@routes.post("/api/api-configs")
+async def api_api_configs_add(request):
+    body = await request.json()
+    arr = _load_api_cfgs()
+    item = {
+        "id": f"api_{int(time.time())}_{random.randint(100,999)}",
+        "api_id": body.get("api_id"),
+        "api_hash": body.get("api_hash"),
+        "note": body.get("note") or "",
+    }
+    if not item["api_id"] or not item["api_hash"]:
+        return web.json_response({"ok": False, "error": "缺少 api_id/api_hash"}, status=400)
+    arr.append(item)
+    _save_api_cfgs(arr)
+    return web.json_response({"ok": True, "total": len(arr)})
+
+@routes.post("/api/api-configs/batch")
+async def api_api_configs_batch(request):
+    body = await request.json()
+    text = body.get("text") or ""
+    arr = _load_api_cfgs()
+    added = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [x.strip() for x in line.replace(",", "|").split("|")]
+        if len(parts) < 2:
+            continue
+        arr.append({"id": f"api_{int(time.time())}_{added}", "api_id": parts[0], "api_hash": parts[1], "note": parts[2] if len(parts)>2 else ""})
+        added += 1
+    _save_api_cfgs(arr)
+    return web.json_response({"ok": True, "added": added, "total": len(arr)})
+
+@routes.delete("/api/api-configs/{config_id}")
+async def api_api_configs_del(request):
+    cid = request.match_info["config_id"]
+    arr = [x for x in _load_api_cfgs() if str(x.get("id")) != str(cid) and str(x.get("api_id")) != str(cid)]
+    _save_api_cfgs(arr)
+    return web.json_response({"ok": True, "total": len(arr)})
+
+@routes.post("/api/api-configs/auto-assign")
+async def api_api_configs_auto(request):
+    return web.json_response(api_auto_assign_by_group())
+
+@routes.post("/api/api-configs/replace-group")
+async def api_api_configs_replace(request):
+    body = await request.json()
+    return web.json_response(api_replace_group(int(body.get("group", -1))))
