@@ -361,6 +361,8 @@ def _persist_worker_rate_limit(worker_id, rate_limit_count, has_been_banned_24h,
 
 bot_app = None  # Telegram Bot Application
 scheduler_task = None
+manual_send_stopped = False
+SEND_STOP_FLAG = False
 # --- 1号面板：长时间无发送自动续跑 / 上报 ---
 PANEL_NAME = "1号面板"
 _STALL_MONITOR_STARTED = False
@@ -1105,6 +1107,21 @@ async def api_worker_add(request):
     body = await request.json()
     data = load_json(WORKERS_CONFIG_FILE)
     worker_list = data.get("workers", [])
+    group_no = int(body.get("group_no") or 1)
+    proxy_id = body.get("proxy_id") or ""
+    bot_id = body.get("bot_id") or ""
+    bot_username = body.get("bot_username") or ""
+    if not bot_id:
+        try:
+            bots = load_json(BOTS_FILE).get("bots", [])
+        except Exception:
+            bots = []
+        start = (group_no-1)*10
+        chunk = bots[start:start+10]
+        if chunk:
+            bot_id = chunk[0].get("id","")
+            bot_username = (chunk[0].get("username") or chunk[0].get("number") or "").lstrip("@")
+
 
     new_worker = {
         "id": f"w_{int(time.time())}_{random.randint(100,999)}",
@@ -1116,6 +1133,41 @@ async def api_worker_add(request):
         "status": "pending_login",
         "created_at": datetime.now().isoformat()
     }
+    new_worker["group_no"]=int(body.get("group_no") or 1)
+    new_worker["proxy_id"]=body.get("proxy_id") or new_worker.get("proxy_id","")
+    if bot_id: new_worker["bot_id"]=bot_id
+    if bot_username: new_worker["bot_username"]=bot_username
+    
+    # bind to selected proxy / group
+    try:
+        group_no = int(body.get("group_no") or new_worker.get("group_no") or 1)
+    except Exception:
+        group_no = 1
+    proxy_id = str(body.get("proxy_id") or new_worker.get("proxy_id") or "")
+    new_worker["group_no"] = group_no
+    pdata = load_json(PROXY_POOL_FILE)
+    proxies = pdata.get("proxies", [])
+    target = None
+    if proxy_id:
+        target = next((x for x in proxies if str(x.get("id"))==str(proxy_id)), None)
+    if target is None and 1<=group_no<=len(proxies):
+        target = proxies[group_no-1]
+    if target is not None:
+        new_worker["proxy_id"] = target.get("id")
+        new_worker["proxy"] = {
+            "host": target.get("host"),
+            "port": target.get("port"),
+            "type": target.get("type") or "http",
+            "username": target.get("username") or "",
+            "password": target.get("password") or "",
+        }
+        assigned = list(target.get("assigned_bots") or [])
+        phone = new_worker.get("phone")
+        if phone and phone not in assigned:
+            assigned.append(phone)
+        target["assigned_bots"] = assigned
+        save_json(PROXY_POOL_FILE, {"proxies": proxies})
+
     worker_list.append(new_worker)
     save_json(WORKERS_CONFIG_FILE, {"workers": worker_list})
     return web.json_response({"ok": True, "worker": new_worker})
@@ -1905,64 +1957,55 @@ async def api_config_update(request):
 @routes.post("/api/send/start")
 async def api_send_start(request):
     """开始发送任务"""
-    global scheduler_task
+    global scheduler_task, SEND_STOP_FLAG, manual_send_stopped
+    SEND_STOP_FLAG = False
+    manual_send_stopped = False
     if scheduler_task and not scheduler_task.done():
         return web.json_response({"ok": False, "error": "任务已在运行中"})
-
     scheduler_task = asyncio.create_task(run_send_scheduler())
     return web.json_response({"ok": True, "message": "发送任务已启动"})
+
 
 
 @routes.post("/api/send/stop")
 async def api_send_stop(request):
     """停止发送任务 — 任何情况都上报"""
-    global scheduler_task, reconnect_task
+    global scheduler_task, reconnect_task, SEND_STOP_FLAG, manual_send_stopped
+    SEND_STOP_FLAG = True
+    manual_send_stopped = True
     disconnected = 0
     try:
         if scheduler_task and not scheduler_task.done():
             scheduler_task.cancel()
             try:
                 await scheduler_task
-            except Exception:
+            except (asyncio.CancelledError, Exception):
                 pass
         scheduler_task = None
-        if reconnect_task and not reconnect_task.done():
-            reconnect_task.cancel()
+        for wid, w in list(workers.items()):
             try:
-                await reconnect_task
-            except Exception:
-                pass
-        reconnect_task = None
-        for wid in list(workers.keys()):
-            try:
-                if getattr(workers[wid], "_connected", False):
-                    await workers[wid].disconnect()
+                if getattr(w, "_connected", False):
+                    await w.disconnect()
                     disconnected += 1
             except Exception:
                 pass
-        logger.info(f"[调度器停止] 已断开 {disconnected} 个水军连接")
+        logger.info("[调度器停止] 已断开 %s 个水军连接" % disconnected)
+    except Exception as e:
+        logger.error("停止发送异常: %s" % e)
     finally:
-        # 无论上面是否异常，都必须上报
         try:
             st = _today_send_stats()
-            await send_panel_notify(
-                f"【1号面板】发送已停止（手动）\n"
-                f"已断开水军: {disconnected}\n"
-                f"今日成功: {st['today']} 条\n"
-                f"累计成功: {st['total']} 条\n"
-                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
+            msg = "停止发送 已断开水军:%s 今日:%s 累计:%s" % (disconnected, st["today"], st["total"])
+            await send_panel_notify(msg)
         except Exception as e:
-            logger.warning(f"停止通知 finally 失败: {e}")
-    
+            logger.warning("停止通知失败: %s" % e)
         try:
             open("/tmp/tg_share_v2_sending.done", "w").write("manual_stop")
             if os.path.exists("/tmp/tg_share_v2_sending"):
                 os.remove("/tmp/tg_share_v2_sending")
         except Exception:
             pass
-
-    return web.json_response({"ok": True, "message": f"发送任务已停止，已断开 {disconnected} 个水军连接"})
+    return web.json_response({"ok": True, "message": "发送任务已停止，已断开 %s 个水军连接" % disconnected})
 
 
 @routes.get("/api/send/status")
@@ -2066,7 +2109,8 @@ async def stall_send_monitor():
             running = scheduler_task is not None and not scheduler_task.done()
 
             if not running:
-                logger.warning(f"[{PANEL_NAME}] 有待发目标但调度未运行，自动启动发送")
+                if not manual_send_stopped:
+                    logger.warning(f"[{PANEL_NAME}] 有待发目标但调度未运行，自动启动发送")
                 try:
                     scheduler_task = asyncio.create_task(run_send_scheduler())
                     _last_auto_restart_ts = now
@@ -2200,6 +2244,8 @@ async def _run_send_scheduler_inner():
     current_activity = {"status": "启动中", "worker": "", "target": "", "step": "初始化"}
     log_activity("调度器启动", "发送调度器开始运行", status="info")
     logger.info("=== 发送调度器启动 ===")
+    global SEND_STOP_FLAG
+    SEND_STOP_FLAG = False
     try:
         open("/tmp/tg_share_v2_sending", "w").write("1")
         if os.path.exists("/tmp/tg_share_v2_sending.done"):
@@ -2344,41 +2390,49 @@ async def _run_send_scheduler_inner():
         # 每目标最多 2 个水军尝试，失败则不再推送
         target_try_count = 0
         max_tries_per_target = 2
-        # === Step 1: 先用一个水军号测试目标用户是否可达 ===
-        target_try_count += 1
-        if target_try_count > max_tries_per_target:
-            target["status"] = "failed"
-            target["sent_at"] = datetime.now().isoformat()
-            target["result"] = f"已尝试{max_tries_per_target}个水军均失败，停止推送该目标"
-            target["bot_username"] = ""
-            save_json(TARGETS_FILE, {"targets": targets_data["targets"]})
-            logger.info(f"[调度] 目标 @{target['username']} 已达{max_tries_per_target}次尝试上限，跳过")
-            await asyncio.sleep(1)
-            continue
-        test_wconfig, test_worker = await get_available_worker()
-        if not test_worker:
-            logger.warning(f"[调度] 没有可用水军号，等待30秒...")
-            await asyncio.sleep(30)
-            continue
-
-        current_activity = {"status": "测试目标", "worker": test_wconfig['phone'], "target": target['username'], "step": "验证用户是否存在"}
-        log_activity("测试目标", f"验证 @{target['username']} 是否存在", worker_phone=test_wconfig['phone'], target=target['username'])
-        logger.info(f"[调度] 测试目标 @{target['username']}（使用 {test_wconfig['phone']}）")
-        try:
-            user_entity, matched = await asyncio.wait_for(
-                test_worker.search_user(target["username"]),
-                timeout=45
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"[调度] ⏰ 测试搜索超时(45s): @{target['username']}，跳过该水军号")
-            test_worker._connected = False
-            user_entity, matched = None, False
-        except Exception as e:
-            logger.warning(f"[调度] 测试搜索异常: {e}")
-            user_entity, matched = None, False
-
-        # 如果目标用户不存在或不匹配，直接标记失败，不浪费发送额度
-        if not user_entity:
+        if SEND_STOP_FLAG:
+            logger.info("[调度] 收到停止指令，立即退出循环")
+            break
+        # === Step 1: 换号验证目标，冻号跳过不标失败 ===
+        skip_ids = set()
+        user_entity, matched = None, False
+        test_wconfig = test_worker = None
+        frozen_only = False
+        for _try in range(10):
+            test_wconfig, test_worker = await get_available_worker(skip_ids)
+            if not test_worker:
+                logger.warning("[调度] 无可用水军做验证")
+                break
+            current_activity = {"status": "测试目标", "worker": test_wconfig['phone'], "target": target['username'], "step": "验证用户是否存在"}
+            log_activity("测试目标", f"验证 @{target['username']} 是否存在", worker_phone=test_wconfig['phone'], target=target['username'])
+            logger.info(f"[调度] 测试目标 @{target['username']}（使用 {test_wconfig['phone']}）")
+            try:
+                user_entity, matched = await asyncio.wait_for(
+                    test_worker.search_user(target['username']),
+                    timeout=35
+                )
+                if matched and user_entity:
+                    break
+                skip_ids.add(test_wconfig.get("id"))
+                logger.warning(f"[调度] 未命中，换号 @{target['username']}")
+            except Exception as e:
+                es = str(e)
+                logger.warning(f"[调度] 测试搜索异常: {e}")
+                skip_ids.add(test_wconfig.get("id"))
+                if "frozen" in es.lower() or "not available" in es.lower():
+                    frozen_only = True
+                    logger.warning(f"[调度] 水军冻结，换号重试 @{target['username']}")
+                    await asyncio.sleep(1)
+                    continue
+                if "UsernameNotOccupied" in es or "UsernameInvalid" in es:
+                    continue
+                await asyncio.sleep(1)
+                continue
+        if not (matched and user_entity):
+            if frozen_only or skip_ids:
+                logger.warning(f"[调度] @{target['username']} 验证失败但可能是冻号，保持 pending")
+                await asyncio.sleep(2)
+                continue
             target["status"] = "failed"
             target["sent_at"] = datetime.now().isoformat()
             target["result"] = f"目标用户 @{target['username']} 不存在"
@@ -2387,19 +2441,6 @@ async def _run_send_scheduler_inner():
             logger.info(f"[调度] ❌ 目标 @{target['username']} 不存在，跳过")
             await asyncio.sleep(2)
             continue
-        if not matched:
-            target["status"] = "failed"
-            target["sent_at"] = datetime.now().isoformat()
-            target["result"] = "用户名不匹配"
-            target["bot_username"] = ""
-            save_json(TARGETS_FILE, {"targets": targets_data["targets"]})
-            logger.info(f"[调度] ❌ 目标 @{target['username']} 用户名不匹配，跳过")
-            await asyncio.sleep(2)
-            continue
-
-        current_activity = {"status": "准备发送", "worker": test_wconfig['phone'], "target": target['username'], "step": "目标确认存在，准备分享"}
-        log_activity("目标确认", f"@{target['username']} 存在，准备发送", worker_phone=test_wconfig['phone'], target=target['username'], status="success")
-        logger.info(f"[调度] ✅ 目标 @{target['username']} 确认存在，开始发送...")
 
         # === Step 2: 目标可达，正式发送（最多尝试3个不同水军号）===
         max_retry_workers = 2  # TG34: 同一目标最多2个水军
@@ -2430,7 +2471,12 @@ async def _run_send_scheduler_inner():
                 worker_send._connected = False
             except Exception as task_err:
                 logger.error(f"[调度] 执行任务异常: {task_err}")
-                success, msg = False, f"任务异常: {task_err}"
+                es = str(task_err)
+                if "frozen" in es.lower() or "not available" in es.lower():
+                    logger.warning("[调度] 冻号导致任务异常，目标保持 pending，换号")
+                    success, msg = False, "worker_frozen"
+                else:
+                    success, msg = False, f"任务异常: {task_err}"
                 worker_send._connected = False
 
             if success:
@@ -2486,7 +2532,13 @@ async def _run_send_scheduler_inner():
                     save_json(BOTS_FILE, bots_data)
                     logger.warning(f"[调度] Bot @{bot_name} 被标记为限制")
 
-        target["status"] = "sent" if send_success else "failed"
+        if (not send_success) and str(msg) == "worker_frozen":
+            logger.warning(f"[调度] 冻号，目标 @{target.get('username')} 保持 pending")
+            target["status"] = "pending"
+            target["result"] = "水军冻结，等待可用号"
+        else:
+            target["status"] = "sent" if send_success else "failed"
+
         target["sent_at"] = datetime.now().isoformat()
         target["result"] = send_msg
         target["bot_username"] = send_worker.current_bot_username if send_worker and send_worker.current_bot_username else ""
