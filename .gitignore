@@ -1,57 +1,19 @@
-# Session files (contain auth credentials)
-*.session
-*.session-journal
-
-# Sensitive data files
-data/targets.json
-data/workers_config.json
-data/proxy_pool.json
-data/bots.json
-data/api_configs.json
-data/bot_config.json
-data/auth.json
-data/config.json
-data/send_history.json
-data/send_status.json
-
-# Avatar images (too large for git)
-data/avatars/
-avatars/
-
-# Python cache
 __pycache__/
 *.pyc
-*.pyo
-
-# Log files
+venv/
+.venv/
+*.bak*
+*.bak.*
 logs/
 *.log
-
-# OS files
-.DS_Store
-Thumbs.db
-data/notify_config.json
-data/restrictions.json
-data/stats.json
-*.bak*
+.env
+data/*.json
 data/sessions/
-data/*.session
-data/notify_config.json
-data/bot_config.json
-data/workers_config.json
-data/targets.json
-data/stats.json
-data/proxy_pool.json
-logs/
-*.bak*
-__pycache__/
-*.pyc
-/tmp/
+data/sessions_recovered/
+data/avatars/
+data/import_temp/
 *.session
 *.session-journal
-data/restrictions.json
-data/*.bak
-__pycache__/
-*.pyc
-agent.log
-/tmp/
+notify_config.json
+frontend/*.broken_*
+frontend/*.stuck_*

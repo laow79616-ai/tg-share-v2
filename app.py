@@ -1733,11 +1733,50 @@ def get_worker_restrictions(worker_phone):
             result.append(record)
     return result
 
+
+@routes.post("/api/bots/redistribute")
+async def api_bots_redistribute(request):
+    """20组均匀分配：按用户名数字排序后写入 group_no + 组内编号"""
+    GROUPS = 20
+    data = load_json(BOTS_FILE)
+    bots = data.get("bots", [])
+
+    def bot_num(b):
+        raw = str(b.get("username") or b.get("number") or "")
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        return int(digits) if digits else 10**9
+
+    bots.sort(key=bot_num)
+    n = len(bots)
+    if n == 0:
+        save_json(BOTS_FILE, {"bots": bots})
+        return web.json_response({"ok": True, "total": 0, "groups": GROUPS, "per_group": []})
+
+    base, rem = divmod(n, GROUPS)
+    sizes = [(base + 1) if i < rem else base for i in range(GROUPS)]
+    idx = 0
+    per_group = []
+    for g in range(GROUPS):
+        chunk = bots[idx: idx + sizes[g]]
+        idx += sizes[g]
+        for seq, b in enumerate(chunk, 1):
+            b["group_no"] = g + 1
+            b["group_seq"] = seq
+            b["number"] = seq
+        per_group.append({"group": g + 1, "count": len(chunk)})
+    save_json(BOTS_FILE, {"bots": bots})
+    return web.json_response({"ok": True, "total": n, "groups": GROUPS, "per_group": per_group})
+
+
 @routes.get("/api/bots")
 async def api_bots_list(request):
     data = load_json(BOTS_FILE)
     bot_list = data.get("bots", [])
-    bot_list.sort(key=lambda b: b.get("number", 0))
+    def _bn(b):
+        raw = str(b.get("username") or b.get("number") or "")
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        return (int(b.get("group_no") or 0), int(digits) if digits else 10**9)
+    bot_list.sort(key=_bn)
     # Bot状态只显示平台级别限制（inline disabled/restricted）
     for bot in bot_list:
         if bot.get("is_restricted"):

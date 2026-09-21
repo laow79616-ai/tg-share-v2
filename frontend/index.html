@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TG Share V2 - 管理面板</title>
+    <title>飞机分享V1号 - 管理面板</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1923; color: #e0e0e0; min-height: 100vh; }
@@ -75,7 +75,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>🚀 TG Share V2 - 推广管理系统
+        <h1>🚀 飞机分享V1号 - 推广管理系统
             <button onclick="logout()" style="float:right; font-size:13px; padding:6px 14px; border:1px solid #37474f; border-radius:6px; background:#263238; color:#90a4ae; cursor:pointer;">退出登录</button>
         </h1>
 
@@ -1195,49 +1195,96 @@ https://t.me/kuaiyue9
         function showBatchBotImport() { document.getElementById('batch-bot-form').style.display = 'block'; }
         function hideBatchBotImport() { document.getElementById('batch-bot-form').style.display = 'none'; }
 
+
+
         async function loadBots() {
-            const r = await fetch(API + '/api/bots');
-            const bots = await r.json();
-            // 按用户名中的数字从小到大排序
-            bots.sort(function(a, b) {
-                var numA = parseInt((a.username || '').replace(/[^0-9]/g, '')) || 0;
-                var numB = parseInt((b.username || '').replace(/[^0-9]/g, '')) || 0;
-                return numA - numB;
-            });
-            let totalSends = 0, successSends = 0, failSends = 0;
-            const html = bots.map(function(b) {
-                totalSends += b.total_sends || 0;
-                successSends += b.success_sends || 0;
-                failSends += b.fail_sends || 0;
-                // 根据限制状态决定显示
-                var restrictionStatus = b.restriction_status || '';
-                var statusClass;
-                if (restrictionStatus === 'platform_banned') statusClass = 'badge-red';
-                else statusClass = b.status === 'active' ? 'badge-green' : (b.status === 'invalid' ? 'badge-red' : 'badge-blue');
-                var statusText;
-                if (restrictionStatus === 'platform_banned') statusText = '🚫平台禁止';
-                else statusText = b.status;
-                var restrictionDetail = '';
-                if (restrictionStatus === 'platform_banned') {
-                    restrictionDetail = '<br><small style="color:#ff1744;font-size:11px;font-weight:bold;">⛔ 已被平台检测禁止使用</small>';
+            /* CONTIGUOUS_BOT_GROUPS */
+            (function(){
+                if (!Array.isArray(bots)) return;
+                bots.sort(function(a,b){
+                    var da=String(a.username||'').replace(/[^0-9]/g,'');
+                    var db=String(b.username||'').replace(/[^0-9]/g,'');
+                    return (parseInt(da||0,10))-(parseInt(db||0,10));
+                });
+                var G=20, n=bots.length, base=Math.floor(n/G), rem=n%G, idx=0;
+                for (var g=1;g<=G;g++){
+                    var sz=Math.min(10, base+(g<=rem?1:0));
+                    for (var k=0;k<sz && idx<n;k++,idx++){
+                        bots[idx].group_no=g;
+                        bots[idx].number=parseInt(String(bots[idx].username||'').replace(/[^0-9]/g,'')||'0',10);
+                    }
                 }
-                const tokenShort = b.token.substring(0, 10) + '...';
-                return '<tr>' +
-                    '<td>' + b.number + '</td>' +
-                    '<td>' + (b.username ? '@' + b.username : '-') + '</td>' +
-                    '<td><code style="font-size:11px">' + tokenShort + '</code></td>' +
-                    '<td><span class="badge ' + statusClass + '">' + statusText + '</span>' + restrictionDetail + '</td>' +
-                    '<td>' +
-                        '<button class="btn btn-sm btn-primary" onclick="verifyBot(\'' + b.id + '\')">验证</button> ' +
-                        '<button class="btn btn-sm btn-danger" onclick="deleteBot(\'' + b.id + '\')">删除</button>' +
-                    '</td></tr>';
+            })();
+
+            const GROUPS = 20;
+            const r = await fetch(API + '/api/bots');
+            let bots = await r.json();
+            if (!Array.isArray(bots)) bots = bots.bots || [];
+            function botNum(b) {
+                var d = String(b.username || '').replace(/[^0-9]/g, '');
+                return d ? parseInt(d, 10) : 0;
+            }
+            bots.sort(function(a,b){ return botNum(a)-botNum(b); });
+
+            var groups = {};
+            for (var g=1;g<=GROUPS;g++) groups[g]=[];
+            // 连续分段，不用 Math.min(19, (function(){var _n=bots.length,_g=20,_sz=Math.ceil(_n/_g)||1;return Math.floor(i/_sz);})())
+            var n = bots.length;
+            var base = Math.floor(n / GROUPS), rem = n % GROUPS;
+            var idx = 0;
+            for (var g=1;g<=GROUPS;g++) {
+                var sz = Math.min(10, base + (g<=rem ? 1 : 0));
+                var chunk = bots.slice(idx, idx+sz);
+                idx += sz;
+                chunk.forEach(function(b){ b.group_no=g; b.number=botNum(b); groups[g].push(b); });
+            }
+
+            window._botGroups = groups;
+            if (!window._selectedBotGroup) window._selectedBotGroup = 1;
+            var left='';
+            for (var g=1;g<=GROUPS;g++) {
+                var arr=groups[g], cnt=arr.length;
+                var act = window._selectedBotGroup===g ? ' active' : '';
+                var range = cnt ? (botNum(arr[0]) + '-' + botNum(arr[cnt-1])) : '-';
+                left += '<div class="group-item'+act+'" onclick="selectBotGroup('+g+')"><div class="g-title">Bot组 '+g+'</div><div class="g-sub">'+cnt+'/10 · '+range+'</div></div>';
+            }
+            var gl=document.getElementById('bot-group-list');
+            if (gl) gl.innerHTML=left;
+            renderBotGroup(window._selectedBotGroup);
+
+            var maxNo=0, ts=0, ss=0, fs=0, ban=0;
+            bots.forEach(function(b){
+                ts+=b.total_sends||0; ss+=b.success_sends||0; fs+=b.fail_sends||0;
+                if (b.restriction_status==='platform_banned') ban++;
+                if (botNum(b)>maxNo) maxNo=botNum(b);
+            });
+            var st=document.getElementById('bot-stats');
+            if (st) st.innerHTML='总计: '+bots.length+' 个Bot | 当前组连续小号到大号 | 编号1-'+maxNo+' | 总发送: '+ts+' | 成功: '+ss+' | 失败: '+fs+(ban?(' | 平台禁止: '+ban):'');
+        }
+        function selectBotGroup(g){
+            window._selectedBotGroup=g;
+            document.querySelectorAll('#bot-group-list .group-item').forEach(function(el,i){
+                if(i+1===g) el.classList.add('active'); else el.classList.remove('active');
+            });
+            renderBotGroup(g);
+        }
+        function renderBotGroup(g){
+            var list=(window._botGroups&&window._botGroups[g])?window._botGroups[g]:[];
+            list.sort(function(a,b){
+                var da=String(a.username||'').replace(/[^0-9]/g,''); 
+                var db=String(b.username||'').replace(/[^0-9]/g,'');
+                return (parseInt(da||0,10))-(parseInt(db||0,10));
+            });
+            var html=list.map(function(b){
+                var no=String(b.username||'').replace(/[^0-9]/g,'')||b.number||'-';
+                var rs=b.restriction_status||'';
+                var sc=rs==='platform_banned'?'badge-red':(b.status==='active'?'badge-green':(b.status==='invalid'?'badge-red':'badge-blue'));
+                var st=rs==='platform_banned'?'平台禁止':(b.status||'-');
+                var tok=(b.token||'').substring(0,10)+'...';
+                return '<tr><td>'+no+'</td><td>'+(b.username?'@'+b.username:'-')+'</td><td><code style="font-size:11px">'+tok+'</code></td><td><span class="badge '+sc+'">'+st+'</span></td><td><button class="btn btn-sm btn-primary" onclick="verifyBot(\''+b.id+'\')">验证</button> <button class="btn btn-sm btn-danger" onclick="deleteBot(\''+b.id+'\')">删除</button></td></tr>';
             }).join('');
-            document.getElementById('bots-list').innerHTML = html || '<tr><td colspan="5">暂无Bot</td></tr>';
-            // 统计被限制的Bot数量
-                var platformBanned = bots.filter(function(b) { return b.restriction_status === 'platform_banned'; }).length;
-                var statsHtml = '总计: ' + bots.length + ' 个Bot | 总发送: ' + totalSends + ' | 成功: ' + successSends + ' | 失败: ' + failSends;
-                if (platformBanned > 0) statsHtml += ' | <span style="color:#ff1744;font-weight:bold;">平台禁止: ' + platformBanned + '</span>';
-                document.getElementById('bot-stats').innerHTML = statsHtml;
+            var tb=document.getElementById('bots-list');
+            if (tb) tb.innerHTML=html||'<tr><td colspan="5">本组暂无Bot</td></tr>';
         }
 
         async function batchImportBots() {
@@ -1766,6 +1813,24 @@ https://t.me/kuaiyue9
         }
 
         async function loadBots() {
+            /* CONTIGUOUS_BOT_GROUPS */
+            (function(){
+                if (!Array.isArray(bots)) return;
+                bots.sort(function(a,b){
+                    var da=String(a.username||'').replace(/[^0-9]/g,'');
+                    var db=String(b.username||'').replace(/[^0-9]/g,'');
+                    return (parseInt(da||0,10))-(parseInt(db||0,10));
+                });
+                var G=20, n=bots.length, base=Math.floor(n/G), rem=n%G, idx=0;
+                for (var g=1;g<=G;g++){
+                    var sz=Math.min(10, base+(g<=rem?1:0));
+                    for (var k=0;k<sz && idx<n;k++,idx++){
+                        bots[idx].group_no=g;
+                        bots[idx].number=parseInt(String(bots[idx].username||'').replace(/[^0-9]/g,'')||'0',10);
+                    }
+                }
+            })();
+
             var r = await fetch(API + '/api/bots');
             var bots = await r.json();
             bots.sort(function (a, b) {
@@ -1777,7 +1842,7 @@ https://t.me/kuaiyue9
             var groups = [];
             for (var g = 0; g < 20; g++) groups.push([]);
             for (var i = 0; i < bots.length; i++) {
-                var gi = i % 20;
+                var gi = Math.min(19, (function(){var _n=bots.length,_g=20,_sz=Math.ceil(_n/_g)||1;return Math.floor(i/_sz);})());
                 if (groups[gi].length < 10) groups[gi].push(bots[i]);
             }
             var left = document.getElementById('bot-group-list');
@@ -1940,5 +2005,93 @@ https://t.me/kuaiyue9
             style="width:100%; padding:11px; border:none; border-radius:6px; background:#4fc3f7; color:#0d1b2a; font-weight:bold; font-size:15px; cursor:pointer;">登 录</button>
     </div>
 </div>
+
+
+
+
+<script id="gfold-force">
+(function(){
+  function token(){ return localStorage.getItem("token")||localStorage.getItem("auth_token")||""; }
+  function hdr(){ return {"X-Auth-Token":token(),"Content-Type":"application/json"}; }
+  function api(){ return window.API||""; }
+  function lineSelect(){
+    var ids=["worker-line-select","worker-proxy-select","line-select","proxy-select","worker-ip-select","add-worker-line"];
+    for(var i=0;i<ids.length;i++){
+      var el=document.getElementById(ids[i]);
+      if(el) return el;
+    }
+    var form=document.getElementById("add-worker-form");
+    return form ? form.querySelector("select") : null;
+  }
+  async function fillLines(){
+    var sel=lineSelect();
+    if(!sel) return;
+    var r=await fetch(api()+"/api/proxies",{credentials:"include",headers:hdr()});
+    var d=await r.json().catch(function(){return {};});
+    var list=Array.isArray(d)?d:(d.proxies||[]);
+    var cur=sel.value;
+    sel.innerHTML='<option value="">-- 请先选择 IP 线路 --</option>';
+    list.forEach(function(p,i){
+      var n=i+1;
+      var host=p.host||p.ip||"";
+      var port=p.port||"";
+      var id=p.id||("");
+      var opt=document.createElement("option");
+      opt.value=id||String(n);
+      opt.textContent="线路 "+n+" · "+host+(port?(":"+port):"");
+      opt.setAttribute("data-group", String(n));
+      opt.setAttribute("data-host", host);
+      sel.appendChild(opt);
+    });
+    if(cur) sel.value=cur;
+    if(!sel.value && list.length) sel.selectedIndex=1;
+  }
+  var _show=window.showAddWorker;
+  window.showAddWorker=async function(){
+    var form=document.getElementById("add-worker-form");
+    if(form) form.style.display="block";
+    if(typeof _show==="function"){
+      try{ _show(); }catch(e){}
+    }
+    await fillLines();
+  };
+  window.hideAddWorker=function(){
+    var form=document.getElementById("add-worker-form");
+    if(form) form.style.display="none";
+  };
+  window.addWorker=async function(){
+    var phoneEl=document.getElementById("worker-phone");
+    var phone=phoneEl?phoneEl.value.trim():"";
+    if(!phone){ alert("请输入手机号"); return; }
+    var sel=lineSelect();
+    if(!sel || !sel.value){ alert("请先选择 IP 线路"); return; }
+    var opt=sel.options[sel.selectedIndex];
+    var group_no=parseInt(opt.getAttribute("data-group")||sel.selectedIndex||"1",10);
+    var body={
+      phone:phone,
+      group_no:group_no,
+      proxy_id:sel.value,
+      auto_bot:true
+    };
+    var r=await fetch(api()+"/api/workers/add",{
+      method:"POST", credentials:"include", headers:hdr(),
+      body:JSON.stringify(body)
+    });
+    var d={}; try{ d=await r.json(); }catch(e){}
+    if(!r.ok || d.ok===false){ alert("添加失败: "+(d.error||r.status)); return; }
+    hideAddWorker();
+    if(phoneEl) phoneEl.value="";
+    if(window.loadWorkers) try{ await loadWorkers(); }catch(e){}
+    alert("已添加 "+phone+" 到第 "+group_no+" 组");
+  };
+  document.addEventListener("click", function(e){
+    var t=(e.target.innerText||"").replace(/\s+/g,"");
+    if(t==="+添加水军" || t==="添加水军"){
+      setTimeout(fillLines, 50);
+    }
+  });
+})();
+</script>
+
 </body>
 </html>
