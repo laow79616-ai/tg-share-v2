@@ -283,6 +283,17 @@ class ShareWorker:
 
             clean_username = username.lstrip("@")
             try:
+                from telethon.tl.functions.contacts import SearchRequest
+                sr = await asyncio.wait_for(
+                    self.client(SearchRequest(q=clean_username, limit=20)),
+                    timeout=30
+                )
+                users = list(getattr(sr, "users", []) or [])
+                for u in users:
+                    un = (getattr(u, "username", None) or "").lower()
+                    if un == clean_username.lower():
+                        logger.info(f"[Worker-{self.worker_id}] ✅ Search命中: @{un}")
+                        return u, True
                 result = await asyncio.wait_for(
                     self.client(ResolveUsernameRequest(clean_username)),
                     timeout=30
@@ -290,8 +301,19 @@ class ShareWorker:
             except asyncio.TimeoutError:
                 logger.error(f"[Worker-{self.worker_id}] ⏰ 搜索用户超时(30s): @{username}")
                 self._connected = False
-                return None, False
+                raise
 
+            if not (result and result.peer):
+                try:
+                    user = await asyncio.wait_for(self.client.get_entity(clean_username), timeout=20)
+                    logger.info(f"[Worker-{self.worker_id}] ✅ get_entity兜底找到: @{getattr(user,'username',clean_username)}")
+                    return user, True
+                except Exception as e:
+                    es = type(e).__name__ + " " + str(e)
+                    if "UsernameNotOccupied" in es or "UsernameInvalid" in es:
+                        return None, False
+                    logger.warning(f"[Worker-{self.worker_id}] Resolve空peer兜底失败: {e}")
+                    raise
             if result and result.peer:
                 try:
                     user = await asyncio.wait_for(
@@ -301,7 +323,7 @@ class ShareWorker:
                 except asyncio.TimeoutError:
                     logger.error(f"[Worker-{self.worker_id}] ⏰ get_entity超时(15s): @{username}")
                     self._connected = False
-                    return None, False
+                    raise
                 if hasattr(user, 'username') and user.username:
                     if user.username.lower() == clean_username.lower():
                         logger.info(f"[Worker-{self.worker_id}] ✅ 找到用户: @{user.username}")
@@ -321,7 +343,7 @@ class ShareWorker:
             return None, False
         except Exception as e:
             logger.error(f"[Worker-{self.worker_id}] 搜索用户出错: {e}")
-            return None, False
+            raise
 
     async def get_bot_ad_and_share(self, target_user, ad_index=0):
         """
@@ -351,6 +373,30 @@ class ShareWorker:
                 with open(bots_file, 'r') as bf:
                     bots_data = json.load(bf)
                 all_bots = [b.get("username", "").lstrip("@") for b in bots_data.get("bots", []) if b.get("enabled", True) and not b.get("is_restricted", False) and b.get("username")]
+                group_bots = None
+                _pp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "proxy_pool.json")
+                if not _os.path.exists(_pp):
+                    _pp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "proxy_pool.json")
+                if _os.path.exists(_pp):
+                    _pdata = json.load(open(_pp, "r"))
+                    _proxies = _pdata.get("proxies", _pdata if isinstance(_pdata, list) else [])
+                    my_host = ((self.config or {}).get("proxy") or {}).get("host")
+                    my_port = str(((self.config or {}).get("proxy") or {}).get("port") or "")
+                    for _px in _proxies:
+                        if str(_px.get("host")) == str(my_host) and str(_px.get("port")) == my_port:
+                            acc = _px.get("assigned_bot_accounts") or []
+                            names = []
+                            for item in acc:
+                                if isinstance(item, dict):
+                                    names.append(str(item.get("username") or item.get("id") or "").lstrip("@"))
+                                else:
+                                    names.append(str(item).lstrip("@"))
+                            names = [x for x in names if x]
+                            if names:
+                                group_bots = [x for x in all_bots if x in names] or names
+                            break
+                if group_bots:
+                    all_bots = group_bots
             except Exception as e:
                 logger.warning(f"[Worker-{self.worker_id}] 加载Bot池失败: {e}")
                 all_bots = []
